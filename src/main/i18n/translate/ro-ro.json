@@ -9,6 +9,9 @@
       }
     },
     "session": {
+      "background_bash": {
+        "output_truncated": "[ieșire trunchiată: {{omittedBytes}} octeți omiși]"
+      },
       "workspace_status": {
         "inaccessible": "Calea către spațiul de lucru nu este accesibilă: {{path}}",
         "missing": "Calea către spațiul de lucru nu există: {{path}}",

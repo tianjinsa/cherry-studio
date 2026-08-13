@@ -9,6 +9,9 @@
       }
     },
     "session": {
+      "background_bash": {
+        "output_truncated": "[输出已截断：已省略 {{omittedBytes}} 字节]"
+      },
       "workspace_status": {
         "inaccessible": "工作区路径不可访问：{{path}}",
         "missing": "工作区路径不存在：{{path}}",

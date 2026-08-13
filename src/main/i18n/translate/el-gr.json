@@ -9,6 +9,9 @@
       }
     },
     "session": {
+      "background_bash": {
+        "output_truncated": "[η έξοδος περικόπηκε: παραλείφθηκαν {{omittedBytes}} byte]"
+      },
       "workspace_status": {
         "inaccessible": "Η διαδρομή του χώρου εργασίας δεν είναι προσβάσιμη: {{path}}",
         "missing": "Η διαδρομή του χώρου εργασίας δεν υπάρχει: {{path}}",

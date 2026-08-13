@@ -9,6 +9,9 @@
       }
     },
     "session": {
+      "background_bash": {
+        "output_truncated": "[出力を省略しました: {{omittedBytes}} バイト省略]"
+      },
       "workspace_status": {
         "inaccessible": "ワークスペースパスにアクセスできません: {{path}}",
         "missing": "ワークスペースパスが存在しません: {{path}}",

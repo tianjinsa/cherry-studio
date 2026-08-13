@@ -9,6 +9,9 @@
       }
     },
     "session": {
+      "background_bash": {
+        "output_truncated": "[輸出已截斷：已省略 {{omittedBytes}} 位元組]"
+      },
       "workspace_status": {
         "inaccessible": "工作區路徑無法存取：{{path}}",
         "missing": "工作區路徑不存在：{{path}}",

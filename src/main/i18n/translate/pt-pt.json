@@ -9,6 +9,9 @@
       }
     },
     "session": {
+      "background_bash": {
+        "output_truncated": "[saída truncada: {{omittedBytes}} bytes omitidos]"
+      },
       "workspace_status": {
         "inaccessible": "O caminho do espaço de trabalho não está acessível: {{path}}",
         "missing": "O caminho do espaço de trabalho não existe: {{path}}",

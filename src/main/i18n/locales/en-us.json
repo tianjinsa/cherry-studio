@@ -9,6 +9,9 @@
       }
     },
     "session": {
+      "background_bash": {
+        "output_truncated": "[output truncated: {{omittedBytes}} bytes omitted]"
+      },
       "workspace_status": {
         "inaccessible": "Workspace path is not accessible: {{path}}",
         "missing": "Workspace path does not exist: {{path}}",

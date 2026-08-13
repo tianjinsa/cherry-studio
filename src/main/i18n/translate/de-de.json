@@ -9,6 +9,9 @@
       }
     },
     "session": {
+      "background_bash": {
+        "output_truncated": "[Ausgabe gekürzt: {{omittedBytes}} Bytes ausgelassen]"
+      },
       "workspace_status": {
         "inaccessible": "Arbeitsbereichspfad ist nicht zugänglich: {{path}}",
         "missing": "Arbeitsbereichspfad existiert nicht: {{path}}",

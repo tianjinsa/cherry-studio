@@ -9,6 +9,9 @@
       }
     },
     "session": {
+      "background_bash": {
+        "output_truncated": "[đầu ra đã bị cắt bớt: đã bỏ qua {{omittedBytes}} byte]"
+      },
       "workspace_status": {
         "inaccessible": "Đường dẫn không gian làm việc không thể truy cập: {{path}}",
         "missing": "Đường dẫn không gian làm việc không tồn tại: {{path}}",
