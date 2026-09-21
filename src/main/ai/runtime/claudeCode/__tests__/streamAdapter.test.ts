@@ -106,12 +106,14 @@ function successResult(overrides: Record<string, unknown> = {}) {
   } as any
 }
 
-function createWorkflowFixture() {
-  const projectRoot = mkdtempSync(path.join(tmpdir(), 'cherry-workflow-'))
+function createWorkflowFixture(sessionId = 'sdk-1') {
+  const claudeConfigDir = mkdtempSync(path.join(tmpdir(), 'cherry-workflow-'))
+  const projectDir = path.join(claudeConfigDir, 'projects', 'D--workspace')
+  const sessionRoot = path.join(projectDir, sessionId)
   const runId = 'wf_safe-123'
   const taskId = 'workflow-task-1'
-  const transcriptDir = path.join(projectRoot, 'subagents', 'workflows', runId)
-  const snapshotPath = path.join(projectRoot, 'workflows', `${runId}.json`)
+  const transcriptDir = path.join(sessionRoot, 'subagents', 'workflows', runId)
+  const snapshotPath = path.join(sessionRoot, 'workflows', `${runId}.json`)
   const script = `export const meta = {
   name: 'review-pr',
   description: 'Review a pull request',
@@ -127,9 +129,12 @@ phase('Verify')
 return agent(\`Verify \${review}\`, { label: 'verifier:main', phase: 'Verify' })`
   mkdirSync(transcriptDir, { recursive: true })
   mkdirSync(path.dirname(snapshotPath), { recursive: true })
+  // The session transcript marks `<projectDir>/<sessionId>` as the session root the receipts resolve against.
+  writeFileSync(path.join(projectDir, `${sessionId}.jsonl`), '')
 
   return {
-    projectRoot,
+    claudeConfigDir,
+    projectRoot: sessionRoot,
     runId,
     taskId,
     transcriptDir,
@@ -163,7 +168,7 @@ return agent(\`Verify \${review}\`, { label: 'verifier:main', phase: 'Verify' })
           ...overrides
         })
       ),
-    cleanup: () => rmSync(projectRoot, { recursive: true, force: true })
+    cleanup: () => rmSync(claudeConfigDir, { recursive: true, force: true })
   }
 }
 
@@ -3039,7 +3044,7 @@ describe('ClaudeCodeStreamAdapter', () => {
       const fixture = createWorkflowFixture()
       try {
         fixture.writeSnapshot()
-        const { adapter, statusEvents } = createAdapter()
+        const { adapter, statusEvents } = createAdapter({ claudeConfigDir: fixture.claudeConfigDir })
         adapter.handleMessage({
           type: 'assistant',
           parent_tool_use_id: null,
@@ -3168,7 +3173,7 @@ describe('ClaudeCodeStreamAdapter', () => {
       const fixture = createWorkflowFixture()
       try {
         fixture.writeSnapshot({ phases: undefined })
-        const { adapter, parts, statusEvents } = createAdapter()
+        const { adapter, parts, statusEvents } = createAdapter({ claudeConfigDir: fixture.claudeConfigDir })
         launchWorkflow(adapter, fixture)
 
         adapter.handleMessage({
@@ -3265,7 +3270,7 @@ describe('ClaudeCodeStreamAdapter', () => {
       vi.setSystemTime('2026-08-12T08:00:00.000Z')
       const fixture = createWorkflowFixture()
       try {
-        const { adapter, statusEvents } = createAdapter()
+        const { adapter, statusEvents } = createAdapter({ claudeConfigDir: fixture.claudeConfigDir })
         adapter.handleMessage({
           type: 'assistant',
           parent_tool_use_id: null,
@@ -3555,7 +3560,7 @@ describe('ClaudeCodeStreamAdapter', () => {
       const fixture = createWorkflowFixture()
       try {
         fixture.writeSnapshot({ padding: 'x'.repeat(1_048_576) })
-        const { adapter, statusEvents } = createAdapter()
+        const { adapter, statusEvents } = createAdapter({ claudeConfigDir: fixture.claudeConfigDir })
         launchWorkflow(adapter, fixture)
         adapter.handleMessage({
           type: 'system',
@@ -3635,7 +3640,7 @@ describe('ClaudeCodeStreamAdapter', () => {
       }
 
       try {
-        const { adapter, statusEvents } = createAdapter()
+        const { adapter, statusEvents } = createAdapter({ claudeConfigDir: fixture.claudeConfigDir })
         launchWorkflow(adapter, fixture)
         adapter.handleMessage({
           type: 'system',
@@ -3856,7 +3861,7 @@ describe('ClaudeCodeStreamAdapter', () => {
       const transcriptPath = path.join(fixture.transcriptDir, `agent-${agentId}.jsonl`)
 
       try {
-        const { adapter, statusEvents } = createAdapter()
+        const { adapter, statusEvents } = createAdapter({ claudeConfigDir: fixture.claudeConfigDir })
         launchWorkflow(adapter, fixture)
         adapter.handleMessage(successResult({ session_id: 'sdk-1' }))
         adapter.handleMessage({
@@ -3980,7 +3985,7 @@ describe('ClaudeCodeStreamAdapter', () => {
       vi.useFakeTimers()
       const fixture = createWorkflowFixture()
       try {
-        const { adapter, statusEvents } = createAdapter()
+        const { adapter, statusEvents } = createAdapter({ claudeConfigDir: fixture.claudeConfigDir })
         launchWorkflow(adapter, fixture)
         adapter.handleMessage(successResult({ session_id: 'sdk-1' }))
         adapter.handleMessage({
@@ -4046,7 +4051,7 @@ describe('ClaudeCodeStreamAdapter', () => {
       vi.useFakeTimers()
       const fixture = createWorkflowFixture()
       try {
-        const { adapter, statusEvents } = createAdapter()
+        const { adapter, statusEvents } = createAdapter({ claudeConfigDir: fixture.claudeConfigDir })
         launchWorkflow(adapter, fixture)
         adapter.handleMessage(successResult({ session_id: 'sdk-1' }))
         adapter.handleMessage({
@@ -4118,7 +4123,7 @@ describe('ClaudeCodeStreamAdapter', () => {
             }
           })}\n`
         )
-        const { adapter, statusEvents } = createAdapter()
+        const { adapter, statusEvents } = createAdapter({ claudeConfigDir: fixture.claudeConfigDir })
         launchWorkflow(adapter, fixture)
         adapter.handleMessage({
           type: 'system',
@@ -4204,7 +4209,7 @@ describe('ClaudeCodeStreamAdapter', () => {
             'tool-second'
           )}\n`
         )
-        const { adapter, statusEvents } = createAdapter()
+        const { adapter, statusEvents } = createAdapter({ claudeConfigDir: fixture.claudeConfigDir })
         launchWorkflow(adapter, fixture)
         adapter.handleMessage({
           type: 'system',
@@ -4259,7 +4264,7 @@ describe('ClaudeCodeStreamAdapter', () => {
       const fixture = createWorkflowFixture()
       try {
         fixture.writeSnapshot({ padding: 'x'.repeat(1_048_576) })
-        const { adapter, statusEvents } = createAdapter()
+        const { adapter, statusEvents } = createAdapter({ claudeConfigDir: fixture.claudeConfigDir })
         launchWorkflow(adapter, fixture)
 
         adapter.handleMessage({
@@ -4303,7 +4308,7 @@ describe('ClaudeCodeStreamAdapter', () => {
           totalTokens: 200,
           totalToolCalls: 4
         })
-        const { adapter, parts, statusEvents } = createAdapter()
+        const { adapter, parts, statusEvents } = createAdapter({ claudeConfigDir: fixture.claudeConfigDir })
         launchWorkflow(adapter, fixture)
 
         adapter.handleMessage({
@@ -4376,7 +4381,7 @@ describe('ClaudeCodeStreamAdapter', () => {
       const fixture = createWorkflowFixture()
       try {
         fixture.writeSnapshot({ taskId: 'different-task' })
-        const first = createAdapter()
+        const first = createAdapter({ claudeConfigDir: fixture.claudeConfigDir })
         launchWorkflow(first.adapter, fixture)
         first.adapter.handleMessage({
           type: 'system',
@@ -4390,7 +4395,7 @@ describe('ClaudeCodeStreamAdapter', () => {
         expect(first.statusEvents.at(-1)?.data.workflow).toBeUndefined()
 
         fixture.writeSnapshot()
-        const second = createAdapter()
+        const second = createAdapter({ claudeConfigDir: fixture.claudeConfigDir })
         launchWorkflow(second.adapter, fixture, { transcriptDir: path.join(fixture.projectRoot, fixture.runId) })
         second.adapter.handleMessage({
           type: 'system',

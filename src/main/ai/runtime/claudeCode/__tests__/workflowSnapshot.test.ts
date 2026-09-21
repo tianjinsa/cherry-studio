@@ -1,8 +1,17 @@
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import path from 'node:path'
+
 import { describe, expect, it } from 'vitest'
 
 import type { AgentWorkflowSnapshot } from '@shared/ai/agentWorkflowProgress'
 
-import { parseLocalWorkflowPlan, updateLocalWorkflowSnapshot } from '../workflowSnapshot'
+import {
+  parseLocalWorkflowLaunch,
+  parseLocalWorkflowPlan,
+  resolveWorkflowSnapshotPath,
+  updateLocalWorkflowSnapshot
+} from '../workflowSnapshot'
 
 describe('parseLocalWorkflowPlan', () => {
   it('parses escaped static fields while skipping nested template expressions', () => {
@@ -221,5 +230,156 @@ describe('updateLocalWorkflowSnapshot', () => {
     expect(previous.workflowProgress).toContainEqual(
       expect.objectContaining({ index: 2, label: 'worker', phaseTitle: 'Verify', state: 'pending' })
     )
+  })
+})
+
+const RUN_ID = 'wf_safe-123'
+
+const symlinksSupported = (() => {
+  try {
+    const probe = mkdtempSync(path.join(tmpdir(), 'cherry-symlink-probe-'))
+    const target = path.join(probe, 'target')
+    writeFileSync(target, '')
+    symlinkSync(target, path.join(probe, 'link'))
+    rmSync(probe, { recursive: true, force: true })
+    return true
+  } catch {
+    return false
+  }
+})()
+
+function createWorkflowSession() {
+  const sessionRoot = realpathSync(mkdtempSync(path.join(tmpdir(), 'cherry-workflow-root-')))
+  const transcriptDir = path.join(sessionRoot, 'subagents', 'workflows', RUN_ID)
+  mkdirSync(transcriptDir, { recursive: true })
+  mkdirSync(path.join(sessionRoot, 'workflows', 'scripts'), { recursive: true })
+
+  return {
+    sessionRoot,
+    transcriptDir,
+    snapshotPath: path.join(sessionRoot, 'workflows', `${RUN_ID}.json`),
+    scriptPath: path.join(sessionRoot, 'workflows', 'scripts', `run-${RUN_ID}.js`),
+    receipt: (overrides: Record<string, unknown> = {}) => ({
+      status: 'async_launched',
+      taskType: 'local_workflow',
+      taskId: 'workflow-task-1',
+      runId: RUN_ID,
+      transcriptDir,
+      ...overrides
+    }),
+    cleanup: () => rmSync(sessionRoot, { recursive: true, force: true })
+  }
+}
+
+describe('parseLocalWorkflowLaunch', () => {
+  it('derives the snapshot from the session root instead of the receipt', () => {
+    const session = createWorkflowSession()
+    try {
+      expect(parseLocalWorkflowLaunch(session.receipt(), 'created', session.sessionRoot)).toEqual({
+        taskId: 'workflow-task-1',
+        runId: RUN_ID,
+        transcriptDir: session.transcriptDir,
+        snapshotPath: session.snapshotPath,
+        sessionRoot: session.sessionRoot,
+        createdAt: 'created'
+      })
+    } finally {
+      session.cleanup()
+    }
+  })
+
+  it('rejects a workflow-shaped transcript directory outside the session root', () => {
+    const session = createWorkflowSession()
+    const foreignRoot = realpathSync(mkdtempSync(path.join(tmpdir(), 'cherry-workflow-foreign-')))
+    try {
+      const foreignTranscriptDir = path.join(foreignRoot, 'subagents', 'workflows', RUN_ID)
+      mkdirSync(foreignTranscriptDir, { recursive: true })
+
+      expect(
+        parseLocalWorkflowLaunch(session.receipt({ transcriptDir: foreignTranscriptDir }), 'c', session.sessionRoot)
+      ).toBeUndefined()
+    } finally {
+      session.cleanup()
+      rmSync(foreignRoot, { recursive: true, force: true })
+    }
+  })
+
+  it('rejects a script-path-only receipt that leaves the session root', () => {
+    const session = createWorkflowSession()
+    const foreignRoot = realpathSync(mkdtempSync(path.join(tmpdir(), 'cherry-workflow-foreign-')))
+    try {
+      const foreignScript = path.join(foreignRoot, 'workflows', 'scripts', `run-${RUN_ID}.js`)
+      mkdirSync(path.dirname(foreignScript), { recursive: true })
+      writeFileSync(foreignScript, '')
+
+      expect(
+        parseLocalWorkflowLaunch(
+          session.receipt({ transcriptDir: undefined, scriptPath: foreignScript }),
+          'c',
+          session.sessionRoot
+        )
+      ).toBeUndefined()
+    } finally {
+      session.cleanup()
+      rmSync(foreignRoot, { recursive: true, force: true })
+    }
+  })
+
+  it('accepts a script path anchored inside the session root', () => {
+    const session = createWorkflowSession()
+    try {
+      const launch = parseLocalWorkflowLaunch(
+        session.receipt({ transcriptDir: undefined, scriptPath: session.scriptPath }),
+        'c',
+        session.sessionRoot
+      )
+
+      expect(launch?.snapshotPath).toBe(session.snapshotPath)
+      expect(launch?.transcriptDir).toBeUndefined()
+    } finally {
+      session.cleanup()
+    }
+  })
+
+  it('rejects a receipt that names no session-local path at all', () => {
+    const session = createWorkflowSession()
+    try {
+      expect(
+        parseLocalWorkflowLaunch(session.receipt({ transcriptDir: undefined }), 'c', session.sessionRoot)
+      ).toBeUndefined()
+    } finally {
+      session.cleanup()
+    }
+  })
+
+  it.skipIf(!symlinksSupported)('refuses a snapshot file that symlinks out of the session root', () => {
+    const session = createWorkflowSession()
+    const foreignRoot = realpathSync(mkdtempSync(path.join(tmpdir(), 'cherry-workflow-foreign-')))
+    const foreignSnapshot = path.join(foreignRoot, `${RUN_ID}.json`)
+    try {
+      writeFileSync(foreignSnapshot, '{}')
+      symlinkSync(foreignSnapshot, session.snapshotPath)
+      const launch = parseLocalWorkflowLaunch(session.receipt(), 'c', session.sessionRoot)
+
+      expect(launch).toBeDefined()
+      expect(resolveWorkflowSnapshotPath(launch!)).toBeUndefined()
+    } finally {
+      session.cleanup()
+      rmSync(foreignRoot, { recursive: true, force: true })
+    }
+  })
+
+  it.skipIf(!symlinksSupported)('rejects a session whose workflows directory symlinks outside it', () => {
+    const session = createWorkflowSession()
+    const foreignRoot = realpathSync(mkdtempSync(path.join(tmpdir(), 'cherry-workflow-foreign-')))
+    try {
+      rmSync(path.join(session.sessionRoot, 'workflows'), { recursive: true, force: true })
+      symlinkSync(foreignRoot, path.join(session.sessionRoot, 'workflows'))
+
+      expect(parseLocalWorkflowLaunch(session.receipt(), 'c', session.sessionRoot)).toBeUndefined()
+    } finally {
+      session.cleanup()
+      rmSync(foreignRoot, { recursive: true, force: true })
+    }
   })
 })

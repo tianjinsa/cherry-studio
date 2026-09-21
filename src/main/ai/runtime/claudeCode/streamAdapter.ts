@@ -62,6 +62,7 @@ import {
   parseLocalWorkflowLaunch,
   parseLocalWorkflowPlan,
   parseWorkflowSnapshotText,
+  resolveWorkflowSnapshotPath,
   updateLocalWorkflowSnapshot
 } from './workflowSnapshot'
 
@@ -1650,7 +1651,7 @@ export class ClaudeCodeStreamAdapter {
 
     const isProviderWorkflow = toolName === 'Workflow' && state.toolType !== 'mcp'
     if (isProviderWorkflow && structuredResult !== undefined && resultTimestamp) {
-      this.registerLocalWorkflowLaunch(result.tool_use_id, structuredResult, resultTimestamp)
+      this.registerLocalWorkflowLaunch(result.tool_use_id, structuredResult, resultTimestamp, sdkSessionId)
     }
 
     const normalizedResult = this.normalizeToolResult(result.content)
@@ -2209,10 +2210,18 @@ export class ClaudeCodeStreamAdapter {
     this.asyncAgentTaskIds.clear()
   }
 
-  private registerLocalWorkflowLaunch(toolCallId: string, value: unknown, createdAt: string): void {
-    const launch = parseLocalWorkflowLaunch(value, createdAt)
-    if (!launch) return
-
+  private registerLocalWorkflowLaunch(
+    toolCallId: string,
+    value: unknown,
+    createdAt: string,
+    sdkSessionId?: string
+  ): void {
+    const sessionRoot = sdkSessionId ? this.resolveClaudeSessionDirectory(sdkSessionId) : undefined
+    const launch = sessionRoot ? parseLocalWorkflowLaunch(value, createdAt, sessionRoot) : undefined
+    if (!launch) {
+      logger.debug('Ignored a local workflow receipt', { sessionId: this.sessionId, toolCallId })
+      return
+    }
     this.localWorkflowLaunches.set(launch.taskId, launch)
     this.localWorkflowLiveSnapshots.delete(launch.taskId)
     this.localWorkflowRuntimeProgresses.delete(launch.taskId)
@@ -2245,10 +2254,12 @@ export class ClaudeCodeStreamAdapter {
   ): AgentTaskEventPartData['workflow'] | undefined {
     const launch = this.localWorkflowLaunches.get(taskId)
     if (!launch) return undefined
+    const snapshotPath = resolveWorkflowSnapshotPath(launch)
+    if (!snapshotPath) return undefined
     try {
       const cached = this.workflowSnapshotCache.get(taskId)
       const result = readUtf8FileWithinLimit(
-        launch.snapshotPath,
+        snapshotPath,
         MAX_WORKFLOW_SNAPSHOT_BYTES,
         cached?.snapshotPath === launch.snapshotPath ? cached : undefined
       )
@@ -2346,6 +2357,19 @@ export class ClaudeCodeStreamAdapter {
     return undefined
   }
 
+  /** `<projectDir>/<sdkSessionId>` — the trusted root for every session-local transcript and snapshot. */
+  private resolveClaudeSessionDirectory(sdkSessionId: string): string | undefined {
+    const projectDir = this.resolveClaudeSessionProjectDirectory(sdkSessionId)
+    if (!projectDir) return undefined
+
+    try {
+      const sessionDir = realpathSync(path.join(projectDir, sdkSessionId))
+      return path.dirname(sessionDir) === projectDir ? sessionDir : undefined
+    } catch {
+      return undefined
+    }
+  }
+
   private readAgentTaskTranscriptStats(taskId: string, sdkSessionId: string): AgentUsageStats | undefined {
     if (!SAFE_TRANSCRIPT_ID.test(taskId)) return undefined
 
@@ -2353,10 +2377,8 @@ export class ClaudeCodeStreamAdapter {
     try {
       let transcriptPath = cached?.transcriptPath
       if (!transcriptPath) {
-        const projectDir = this.resolveClaudeSessionProjectDirectory(sdkSessionId)
-        if (!projectDir) return undefined
-        const sessionDir = realpathSync(path.join(projectDir, sdkSessionId))
-        if (path.dirname(sessionDir) !== projectDir) return undefined
+        const sessionDir = this.resolveClaudeSessionDirectory(sdkSessionId)
+        if (!sessionDir) return undefined
         const transcriptDir = realpathSync(path.join(sessionDir, 'subagents'))
         if (path.dirname(transcriptDir) !== sessionDir) return undefined
         transcriptPath = realpathSync(path.join(transcriptDir, `agent-${taskId}.jsonl`))

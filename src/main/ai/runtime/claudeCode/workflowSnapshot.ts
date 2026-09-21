@@ -1,3 +1,4 @@
+import { realpathSync, statSync } from 'node:fs'
 import path from 'node:path'
 
 import {
@@ -12,6 +13,8 @@ export interface LocalWorkflowLaunch {
   workflowName?: string
   transcriptDir?: string
   snapshotPath: string
+  /** Real path of the session directory every receipt path is confined to. */
+  sessionRoot: string
   createdAt: string
 }
 
@@ -621,33 +624,78 @@ function normalizePathForComparison(value: string): string {
   return process.platform === 'win32' ? normalized.toLowerCase() : normalized
 }
 
-function resolveSnapshotFromTranscriptDir(runId: string, transcriptDir: string): string | undefined {
-  const resolvedTranscriptDir = path.resolve(transcriptDir)
-  if (path.basename(resolvedTranscriptDir) !== runId) return undefined
-
-  const transcriptWorkflowsDir = path.dirname(resolvedTranscriptDir)
-  if (path.basename(transcriptWorkflowsDir) !== 'workflows') return undefined
-
-  const subagentsDir = path.dirname(transcriptWorkflowsDir)
-  if (path.basename(subagentsDir) !== 'subagents') return undefined
-
-  return path.join(path.dirname(subagentsDir), 'workflows', `${runId}.json`)
+function isWithinRoot(root: string, candidate: string): boolean {
+  const normalizedRoot = normalizePathForComparison(root)
+  const normalizedCandidate = normalizePathForComparison(candidate)
+  return normalizedCandidate === normalizedRoot || normalizedCandidate.startsWith(`${normalizedRoot}${path.sep}`)
 }
 
-function resolveSnapshotFromScriptPath(runId: string, scriptPath: string): string | undefined {
-  const resolvedScriptPath = path.resolve(scriptPath)
-  if (!path.basename(resolvedScriptPath).endsWith(`-${runId}.js`)) return undefined
+/** Real path of a value whose tail may not exist yet — symlinks in the existing ancestors still resolve. */
+function resolveRealPath(value: string): string | undefined {
+  const missing: string[] = []
+  let current = path.resolve(value)
+  for (;;) {
+    try {
+      return path.join(realpathSync(current), ...missing.toReversed())
+    } catch {
+      const parent = path.dirname(current)
+      if (parent === current) return undefined
+      missing.push(path.basename(current))
+      current = parent
+    }
+  }
+}
 
-  const scriptsDir = path.dirname(resolvedScriptPath)
-  if (path.basename(scriptsDir) !== 'scripts') return undefined
-
-  const workflowsDir = path.dirname(scriptsDir)
-  if (path.basename(workflowsDir) !== 'workflows') return undefined
-
+/**
+ * Derives the snapshot from the session root instead of the receipt, so a crafted `transcriptDir` or
+ * `scriptPath` cannot aim the reader at another directory.
+ */
+function resolveSnapshotPath(runId: string, sessionRoot: string): string | undefined {
+  const workflowsDir = resolveRealPath(path.join(sessionRoot, 'workflows'))
+  if (!workflowsDir || path.basename(workflowsDir) !== 'workflows' || !isWithinRoot(sessionRoot, workflowsDir)) {
+    return undefined
+  }
   return path.join(workflowsDir, `${runId}.json`)
 }
 
-export function parseLocalWorkflowLaunch(value: unknown, createdAt: string): LocalWorkflowLaunch | undefined {
+/** Receipt paths count only while they stay inside the session root, symlinked parents included. */
+function resolveReceiptPath(value: string, sessionRoot: string): string | undefined {
+  const resolved = resolveRealPath(value)
+  return resolved && isWithinRoot(sessionRoot, resolved) ? resolved : undefined
+}
+
+function isWorkflowTranscriptDir(value: string, runId: string): boolean {
+  return (
+    path.basename(value) === runId &&
+    path.basename(path.dirname(value)) === 'workflows' &&
+    path.basename(path.dirname(path.dirname(value))) === 'subagents'
+  )
+}
+
+function isWorkflowScriptPath(value: string, runId: string): boolean {
+  return (
+    path.basename(value).endsWith(`-${runId}.js`) &&
+    path.basename(path.dirname(value)) === 'scripts' &&
+    path.basename(path.dirname(path.dirname(value))) === 'workflows'
+  )
+}
+
+/**
+ * Re-resolves a launch snapshot right before it is read: the file the reader opens must still live
+ * under the session root, which also rejects a `workflows` directory or snapshot swapped for a symlink.
+ */
+export function resolveWorkflowSnapshotPath(launch: LocalWorkflowLaunch): string | undefined {
+  if (!isSafeRunId(launch.runId)) return undefined
+  const resolved = resolveRealPath(launch.snapshotPath)
+  if (!resolved || !isWithinRoot(launch.sessionRoot, resolved)) return undefined
+  return path.basename(resolved) === `${launch.runId}.json` ? resolved : undefined
+}
+
+export function parseLocalWorkflowLaunch(
+  value: unknown,
+  createdAt: string,
+  sessionRoot: string
+): LocalWorkflowLaunch | undefined {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) return undefined
   const receipt = value as Record<string, unknown>
   if (receipt.status !== 'async_launched' || receipt.taskType !== 'local_workflow') return undefined
@@ -656,28 +704,35 @@ export function parseLocalWorkflowLaunch(value: unknown, createdAt: string): Loc
   const runId = getNonEmptyString(receipt.runId)
   if (!taskId || !runId || !isSafeRunId(runId)) return undefined
 
-  const transcriptDir = getNonEmptyString(receipt.transcriptDir)
-  const scriptPath = getNonEmptyString(receipt.scriptPath)
-  const transcriptSnapshotPath = transcriptDir ? resolveSnapshotFromTranscriptDir(runId, transcriptDir) : undefined
-  const scriptSnapshotPath = scriptPath ? resolveSnapshotFromScriptPath(runId, scriptPath) : undefined
-  if (
-    transcriptSnapshotPath &&
-    scriptSnapshotPath &&
-    normalizePathForComparison(transcriptSnapshotPath) !== normalizePathForComparison(scriptSnapshotPath)
-  ) {
+  const realSessionRoot = resolveRealPath(sessionRoot)
+  if (!realSessionRoot) return undefined
+  try {
+    if (!statSync(realSessionRoot).isDirectory()) return undefined
+  } catch {
     return undefined
   }
 
-  const snapshotPath = transcriptSnapshotPath ?? scriptSnapshotPath
+  const snapshotPath = resolveSnapshotPath(runId, realSessionRoot)
   if (!snapshotPath) return undefined
+
+  const receiptTranscriptDir = getNonEmptyString(receipt.transcriptDir)
+  const transcriptDir = receiptTranscriptDir ? resolveReceiptPath(receiptTranscriptDir, realSessionRoot) : undefined
+  if (receiptTranscriptDir && (!transcriptDir || !isWorkflowTranscriptDir(transcriptDir, runId))) return undefined
+
+  const receiptScriptPath = getNonEmptyString(receipt.scriptPath)
+  const scriptPath = receiptScriptPath ? resolveReceiptPath(receiptScriptPath, realSessionRoot) : undefined
+  if (receiptScriptPath && (!scriptPath || !isWorkflowScriptPath(scriptPath, runId))) return undefined
+
+  if (!transcriptDir && !scriptPath) return undefined
 
   const workflowName = getNonEmptyString(receipt.workflowName)
   return {
     taskId,
     runId,
     ...(workflowName ? { workflowName } : {}),
-    ...(transcriptSnapshotPath && transcriptDir ? { transcriptDir: path.resolve(transcriptDir) } : {}),
+    ...(transcriptDir ? { transcriptDir } : {}),
     snapshotPath,
+    sessionRoot: realSessionRoot,
     createdAt
   }
 }
