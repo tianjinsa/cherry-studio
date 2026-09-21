@@ -3369,6 +3369,89 @@ describe('AgentRightPane', () => {
     }
   })
 
+  it('lays out a completed background command row like a running one so the duration stays inside the card', () => {
+    const longTitle = 'Run background command outputting for 30 seconds'
+    const parts = [
+      {
+        type: 'dynamic-tool',
+        toolCallId: 'bash-live',
+        toolName: 'Bash',
+        state: 'output-available',
+        input: { command: 'pnpm dev' },
+        output: 'ready on http://localhost:5173'
+      },
+      {
+        type: 'data-agent-task-event',
+        data: {
+          event: 'started',
+          taskId: 'shell-live',
+          toolUseId: 'bash-live',
+          taskType: 'local_bash',
+          status: 'in_progress',
+          title: 'Start development server',
+          createdAt: '2026-08-12T01:00:00.000Z'
+        }
+      },
+      {
+        type: 'dynamic-tool',
+        toolCallId: 'bash-done',
+        toolName: 'Bash',
+        state: 'output-available',
+        input: { command: 'sleep 30' },
+        output: 'done'
+      },
+      {
+        type: 'data-agent-task-event',
+        data: {
+          event: 'started',
+          taskId: 'shell-done',
+          toolUseId: 'bash-done',
+          taskType: 'local_bash',
+          status: 'in_progress',
+          title: longTitle,
+          createdAt: '2026-08-12T01:00:00.000Z'
+        }
+      },
+      {
+        type: 'data-agent-task-event',
+        data: {
+          event: 'notification',
+          taskId: 'shell-done',
+          toolUseId: 'bash-done',
+          taskType: 'local_bash',
+          status: 'completed',
+          title: longTitle,
+          createdAt: '2026-08-12T01:00:00.000Z',
+          completedAt: '2026-08-12T01:00:31.000Z',
+          usage: { durationMs: 31_000 }
+        }
+      }
+    ] as unknown as CherryMessagePart[]
+    const messages = [{ id: 'm1', role: 'assistant', parts, metadata: { status: 'pending' } }] as CherryUIMessage[]
+
+    render(
+      <TestAgentRightPane sessionId="session-a" messages={messages} partsByMessageId={{ m1: parts }}>
+        <AgentRightPane.Shortcuts />
+        <AgentRightPane.Viewport />
+      </TestAgentRightPane>
+    )
+    fireEvent.click(screen.getByRole('button', { name: 'agent.right_pane.tabs.status' }))
+
+    const running = within(screen.getByRole('region', { name: 'agent.right_pane.status.running' }))
+    const completed = within(screen.getByRole('region', { name: 'agent.right_pane.status.completed' }))
+    expect(completed.getByText('31s')).toBeInTheDocument()
+
+    // The card row must clamp its flexible column in every status: a released clamp lets the title
+    // size the row to its content and clips the duration badge against the card's overflow.
+    const rowClassName = (scope: ReturnType<typeof within>) => {
+      const row = scope.getByTestId('agent-run-task-title').closest('[class*="grid"]')
+      expect(row).not.toBeNull()
+      return row?.className ?? ''
+    }
+    expect(rowClassName(completed)).toContain('minmax(0,1fr)')
+    expect(rowClassName(completed)).toBe(rowClassName(running))
+  })
+
   it('keeps a background command collapsed and refreshes deferred output from Flow part versions', async () => {
     const user = userEvent.setup()
     const createParts = (output: unknown, status: 'in_progress' | 'completed' = 'in_progress') =>

@@ -1728,7 +1728,7 @@ function GenericRunTaskCard({
 
   return (
     <div className="overflow-hidden rounded-md border border-border-subtle bg-background">
-      <div className={cn('grid items-start', task.status === 'in_progress' && 'grid-cols-[minmax(0,1fr)_auto]')}>
+      <div className="grid grid-cols-[minmax(0,1fr)_auto] items-start">
         {toolCallId ? (
           <button
             type="button"
@@ -1786,7 +1786,7 @@ function ShellRunTaskCard({
       onValueChange={(value) => setExpanded(value === 'output')}>
       <AccordionItem value="output" className="border-0 first:border-t-0 last:border-b-0">
         <div className="overflow-hidden rounded-md border border-border-subtle bg-background">
-          <div className={cn('grid items-start', task.status === 'in_progress' && 'grid-cols-[minmax(0,1fr)_auto]')}>
+          <div className="grid grid-cols-[minmax(0,1fr)_auto] items-start">
             <AccordionTrigger className="min-w-0 items-start gap-2 rounded-none px-2.5 py-2 font-normal hover:bg-accent/50 hover:no-underline">
               <TaskStatusIcon status={task.status} />
               <span className="shrink-0">
@@ -1885,7 +1885,7 @@ function WorkflowRunTaskCard({
     <Accordion type="single" collapsible defaultValue="phases">
       <AccordionItem value="phases" className="border-0 first:border-t-0 last:border-b-0">
         <div className="overflow-hidden rounded-md border border-border-subtle bg-background">
-          <div className={cn('grid items-start', task.status === 'in_progress' && 'grid-cols-[minmax(0,1fr)_auto]')}>
+          <div className="grid grid-cols-[minmax(0,1fr)_auto] items-start">
             {phases.length > 0 ? (
               <AccordionTrigger className="min-w-0 items-start gap-2 rounded-none px-2.5 py-2 font-normal hover:bg-accent/50 hover:no-underline">
                 {summary}
