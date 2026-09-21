@@ -1290,6 +1290,51 @@ describe('AgentSessionMessageService', () => {
       expect(Date.parse(recovered.updatedAt)).toBeGreaterThan(Date.parse(initialUpdatedAt))
     })
 
+    it('reports whether a workflow checkpoint reached its message row', () => {
+      const PENDING = '018f6ed6-73b8-7f40-8d0d-9bb2f8f1d027'
+      agentSessionMessageService.saveMessage({
+        sessionId: SESSION_ID,
+        message: {
+          id: PENDING,
+          role: 'assistant',
+          status: 'pending',
+          data: {
+            parts: [
+              {
+                type: 'data-agent-task-event',
+                data: { event: 'started', taskId: 'workflow-1', status: 'in_progress', title: 'Review' }
+              }
+            ]
+          }
+        }
+      })
+      const event = {
+        event: 'progress' as const,
+        taskId: 'workflow-1',
+        status: 'in_progress' as const,
+        title: 'Review',
+        workflow: {
+          runId: 'run-1',
+          taskId: 'workflow-1',
+          totalTokens: 10,
+          totalCumulativeTokens: 20,
+          phases: [],
+          workflowProgress: []
+        }
+      }
+
+      expect(agentSessionMessageService.checkpointWorkflowTaskEvent(SESSION_ID, PENDING, event)).toBe(true)
+
+      // A deleted parent row is the one outcome callers must not read as "persisted".
+      expect(
+        agentSessionMessageService.checkpointWorkflowTaskEvent(
+          SESSION_ID,
+          '018f6ed6-73b8-7f40-8d0d-9bb2f8f1d028',
+          event
+        )
+      ).toBe(false)
+    })
+
     it('replaces the terminal workflow snapshot instead of an earlier progress snapshot', () => {
       const PENDING = '018f6ed6-73b8-7f40-8d0d-9bb2f8f1d024'
       const workflow = (totalTokens: number) => ({

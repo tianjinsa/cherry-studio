@@ -1923,7 +1923,13 @@ export class AgentSessionMessageService {
     return saved
   }
 
-  checkpointWorkflowTaskEvent(sessionId: string, messageId: string, event: AgentTaskEventPartData): void {
+  /**
+   * Persists the latest workflow statistics carried by a task event.
+   *
+   * @returns `true` when the checkpoint reached the message row, `false` when that row no longer
+   * exists — callers must not treat a missing row as a persisted checkpoint.
+   */
+  checkpointWorkflowTaskEvent(sessionId: string, messageId: string, event: AgentTaskEventPartData): boolean {
     const updated = application.get('DbService').withWriteTx((tx) => {
       const existingRow = this.findExistingMessageRow(tx, sessionId, messageId)
       if (!existingRow) return false
@@ -1975,6 +1981,7 @@ export class AgentSessionMessageService {
         }
       ])
     }
+    return updated
   }
 
   /**

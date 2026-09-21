@@ -473,6 +473,9 @@ describe('AgentSessionRuntimeService', () => {
     runtimeDriverRegistry.clearForTest()
     toolApprovalRegistry.clear('test-reset')
     vi.clearAllMocks()
+    // The real service reports whether the checkpoint reached a message row; tests that need the
+    // "parent row is gone" branch override this with false.
+    mocks.checkpointWorkflowTaskEvent.mockReturnValue(true)
     mocks.saveMessage.mockImplementation(({ message }) => ({
       ...message,
       id: message.id ?? 'generated-message-id'
@@ -2919,6 +2922,7 @@ describe('AgentSessionRuntimeService', () => {
         }
         if (index >= 0) persistedParts[index] = checkpoint
         else persistedParts.push(checkpoint)
+        return true
       })
       const service = new AgentSessionRuntimeService()
       service.beginTurn(baseTurnInput)
@@ -3164,6 +3168,34 @@ describe('AgentSessionRuntimeService', () => {
         expect(mockMainLoggerService.error).toHaveBeenCalledWith(
           'Gave up persisting workflow statistics',
           expect.objectContaining({ taskId: 'workflow-stuck' })
+        )
+      } finally {
+        mocks.checkpointWorkflowTaskEvent.mockReset()
+        vi.useRealTimers()
+      }
+    })
+
+    it('releases a workflow checkpoint whose message row is gone instead of retrying it', () => {
+      vi.useFakeTimers()
+      try {
+        const { service, entry, checkpoints } = beginCheckpointTurn()
+        // A deleted parent row cannot come back, so the checkpoint must be dropped visibly.
+        mocks.checkpointWorkflowTaskEvent.mockImplementation(() => false)
+
+        ;(service as any).handleRuntimeEvent(entry, {
+          type: 'background-task-event',
+          data: terminalCheckpointEvent('workflow-orphan', 70)
+        })
+        for (let attempt = 0; attempt < 5; attempt++) vi.runOnlyPendingTimers()
+        const writesWhenSettled = mocks.checkpointWorkflowTaskEvent.mock.calls.length
+
+        // A target that cannot come back must not be retried: further timer runs add no writes.
+        vi.runOnlyPendingTimers()
+        expect(mocks.checkpointWorkflowTaskEvent.mock.calls.length).toBe(writesWhenSettled)
+        expect(checkpoints()?.has('workflow-orphan')).toBe(false)
+        expect(mockMainLoggerService.warn).toHaveBeenCalledWith(
+          'Dropped workflow statistics for a missing agent session message',
+          expect.objectContaining({ taskId: 'workflow-orphan' })
         )
       } finally {
         mocks.checkpointWorkflowTaskEvent.mockReset()

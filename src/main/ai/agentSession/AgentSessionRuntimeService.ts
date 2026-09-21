@@ -2647,7 +2647,22 @@ export class AgentSessionRuntimeService extends BaseService {
     if (checkpoint.timer) clearTimeout(checkpoint.timer)
     checkpoint.timer = undefined
     try {
-      agentSessionMessageService.checkpointWorkflowTaskEvent(entry.sessionId, checkpoint.messageId, checkpoint.event)
+      const persisted = agentSessionMessageService.checkpointWorkflowTaskEvent(
+        entry.sessionId,
+        checkpoint.messageId,
+        checkpoint.event
+      )
+      if (!persisted) {
+        // The parent message row is gone, so this state has nowhere to land: release it with a log
+        // instead of retrying against a target that cannot come back.
+        logger.warn('Dropped workflow statistics for a missing agent session message', {
+          sessionId: entry.sessionId,
+          messageId: checkpoint.messageId,
+          taskId
+        })
+        if (entry.workflowCheckpoints?.get(taskId) === checkpoint) entry.workflowCheckpoints.delete(taskId)
+        return true
+      }
       checkpoint.lastWrittenAt = Date.now()
       checkpoint.failedAttempts = 0
       return true
