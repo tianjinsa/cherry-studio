@@ -3088,6 +3088,89 @@ describe('AgentSessionRuntimeService', () => {
       }
     })
 
+    const terminalCheckpointEvent = (taskId: string, totalTokens: number) => ({
+      event: 'updated' as const,
+      taskId,
+      toolUseId: 'workflow-root',
+      status: 'completed' as const,
+      title: 'Review',
+      workflow: {
+        runId: `run-${taskId}`,
+        taskId,
+        totalTokens,
+        totalCumulativeTokens: totalTokens + 10,
+        totalToolCalls: 2,
+        phases: [{ title: 'Inspect' }],
+        workflowProgress: []
+      }
+    })
+
+    const beginCheckpointTurn = () => {
+      const service = new AgentSessionRuntimeService()
+      service.beginTurn(baseTurnInput)
+      const entry = getEntry(service)
+      entry.currentTurn.controller = { enqueue: vi.fn() } as never
+      ;(entry.flowMessageIdsByToolCallId ??= new Map()).set('workflow-root', 'assistant-1')
+      return { service, entry, checkpoints: () => entry.workflowCheckpoints }
+    }
+
+    it('retries a failed terminal workflow checkpoint instead of dropping its statistics', () => {
+      vi.useFakeTimers()
+      try {
+        const { service, entry, checkpoints } = beginCheckpointTurn()
+        mocks.checkpointWorkflowTaskEvent.mockImplementationOnce(() => {
+          throw new Error('database is locked')
+        })
+
+        ;(service as any).handleRuntimeEvent(entry, {
+          type: 'background-task-event',
+          data: terminalCheckpointEvent('workflow-retry', 30)
+        })
+
+        expect(mocks.checkpointWorkflowTaskEvent).toHaveBeenCalledTimes(1)
+        expect(checkpoints()?.has('workflow-retry')).toBe(true)
+
+        vi.runOnlyPendingTimers()
+
+        expect(mocks.checkpointWorkflowTaskEvent).toHaveBeenCalledTimes(2)
+        expect(mocks.checkpointWorkflowTaskEvent).toHaveBeenLastCalledWith(
+          'session-1',
+          'assistant-1',
+          expect.objectContaining({ workflow: expect.objectContaining({ totalTokens: 30 }) })
+        )
+        expect(checkpoints()?.has('workflow-retry')).toBe(false)
+      } finally {
+        mocks.checkpointWorkflowTaskEvent.mockReset()
+        vi.useRealTimers()
+      }
+    })
+
+    it('stops retrying a workflow checkpoint that keeps failing and reports it', () => {
+      vi.useFakeTimers()
+      try {
+        const { service, entry, checkpoints } = beginCheckpointTurn()
+        mocks.checkpointWorkflowTaskEvent.mockImplementation(() => {
+          throw new Error('database is locked')
+        })
+
+        ;(service as any).handleRuntimeEvent(entry, {
+          type: 'background-task-event',
+          data: terminalCheckpointEvent('workflow-stuck', 50)
+        })
+        for (let attempt = 0; attempt < 5; attempt++) vi.runOnlyPendingTimers()
+
+        expect(mocks.checkpointWorkflowTaskEvent).toHaveBeenCalledTimes(3)
+        expect(checkpoints()?.has('workflow-stuck')).toBe(false)
+        expect(mockMainLoggerService.error).toHaveBeenCalledWith(
+          'Gave up persisting workflow statistics',
+          expect.objectContaining({ taskId: 'workflow-stuck' })
+        )
+      } finally {
+        mocks.checkpointWorkflowTaskEvent.mockReset()
+        vi.useRealTimers()
+      }
+    })
+
     it('keeps the latest workflow checkpoint after parent persistence and close finalization', async () => {
       vi.useFakeTimers()
       try {

@@ -122,6 +122,7 @@ const BACKGROUND_FLOW_HANDOFF_TTL_MS = 60_000
 const BACKGROUND_FLOW_PUBLISH_THROTTLE_MS = 150
 const TASK_EVENTS_PUBLISH_THROTTLE_MS = 100
 const WORKFLOW_CHECKPOINT_THROTTLE_MS = 1_000
+const WORKFLOW_CHECKPOINT_MAX_ATTEMPTS = 3
 const MAX_PENDING_TASK_EVENT_HANDOFFS = 256
 
 function knowledgeScopeEquals(left: readonly string[], right: readonly string[]): boolean {
@@ -254,6 +255,7 @@ type WorkflowCheckpoint = {
   messageId: string
   event: AgentTaskEventPartData
   lastWrittenAt?: number
+  failedAttempts?: number
   timer?: ReturnType<typeof setTimeout>
 }
 
@@ -2434,11 +2436,10 @@ export class AgentSessionRuntimeService extends BaseService {
       entry.terminalWorkflowSnapshotPersistedTaskIds?.delete(taskId)
       entry.terminalTaskIds?.delete(taskId)
       const checkpoint = entry.workflowCheckpoints?.get(taskId)
-      if (checkpoint?.timer) {
-        this.writeWorkflowCheckpoint(entry, taskId, checkpoint, entry.closing === true)
-        if (checkpoint.timer) clearTimeout(checkpoint.timer)
+      if (checkpoint) {
+        this.flushPendingWorkflowCheckpoint(entry, taskId, checkpoint, entry.closing === true)
+        if ((checkpoint.failedAttempts ?? 0) === 0) entry.workflowCheckpoints?.delete(taskId)
       }
-      entry.workflowCheckpoints?.delete(taskId)
     }
     entry.persistedFlowMessageIds?.delete(messageId)
     entry.pendingBackgroundFlowChunks?.delete(messageId)
@@ -2483,8 +2484,8 @@ export class AgentSessionRuntimeService extends BaseService {
     }
     for (const [taskId, checkpoint] of entry.workflowCheckpoints ?? []) {
       if (retainedTaskIds.has(taskId)) continue
-      if (checkpoint.timer) this.writeWorkflowCheckpoint(entry, taskId, checkpoint)
-      entry.workflowCheckpoints?.delete(taskId)
+      this.flushPendingWorkflowCheckpoint(entry, taskId, checkpoint)
+      if ((checkpoint.failedAttempts ?? 0) === 0) entry.workflowCheckpoints?.delete(taskId)
     }
     for (const messageId of entry.persistedFlowMessageIds ?? []) {
       if (!retainedMessageIds.has(messageId)) entry.persistedFlowMessageIds?.delete(messageId)
@@ -2624,7 +2625,7 @@ export class AgentSessionRuntimeService extends BaseService {
 
     const elapsed = Date.now() - (checkpoint.lastWrittenAt ?? 0)
     if (terminal || elapsed >= WORKFLOW_CHECKPOINT_THROTTLE_MS) {
-      this.writeWorkflowCheckpoint(entry, event.taskId, checkpoint)
+      this.persistWorkflowCheckpoint(entry, event.taskId, checkpoint)
       return
     }
     checkpoint.timer ??= setTimeout(
@@ -2639,21 +2640,81 @@ export class AgentSessionRuntimeService extends BaseService {
     taskId: string,
     checkpoint: WorkflowCheckpoint,
     allowDetached = false
-  ): void {
-    if (entry.workflowCheckpoints?.get(taskId) !== checkpoint || (!allowDetached && !this.isCurrentEntry(entry))) return
+  ): boolean {
+    if (entry.workflowCheckpoints?.get(taskId) !== checkpoint || (!allowDetached && !this.isCurrentEntry(entry))) {
+      return true
+    }
     if (checkpoint.timer) clearTimeout(checkpoint.timer)
     checkpoint.timer = undefined
     try {
       agentSessionMessageService.checkpointWorkflowTaskEvent(entry.sessionId, checkpoint.messageId, checkpoint.event)
       checkpoint.lastWrittenAt = Date.now()
+      checkpoint.failedAttempts = 0
+      return true
     } catch (error) {
+      checkpoint.failedAttempts = (checkpoint.failedAttempts ?? 0) + 1
       logger.warn('Failed to checkpoint workflow statistics', {
         sessionId: entry.sessionId,
         messageId: checkpoint.messageId,
         taskId,
+        attempts: checkpoint.failedAttempts,
         error
       })
+      return false
     }
+  }
+
+  /**
+   * A terminal checkpoint is the last write of a task's statistics, so a failed attempt keeps the
+   * checkpoint pending on a bounded retry instead of dropping the data with the released message state.
+   */
+  private persistWorkflowCheckpoint(
+    entry: AgentSessionRuntimeEntry,
+    taskId: string,
+    checkpoint: WorkflowCheckpoint,
+    allowDetached = false
+  ): boolean {
+    if (this.writeWorkflowCheckpoint(entry, taskId, checkpoint, allowDetached)) return true
+    this.retryWorkflowCheckpoint(entry, taskId, checkpoint)
+    return false
+  }
+
+  /** Writes a checkpoint whose throttle timer is still pending; a settled checkpoint needs no flush. */
+  private flushPendingWorkflowCheckpoint(
+    entry: AgentSessionRuntimeEntry,
+    taskId: string,
+    checkpoint: WorkflowCheckpoint,
+    allowDetached = false
+  ): boolean {
+    return checkpoint.timer ? this.persistWorkflowCheckpoint(entry, taskId, checkpoint, allowDetached) : true
+  }
+
+  private retryWorkflowCheckpoint(
+    entry: AgentSessionRuntimeEntry,
+    taskId: string,
+    checkpoint: WorkflowCheckpoint
+  ): void {
+    const attempts = checkpoint.failedAttempts ?? 0
+    if (attempts >= WORKFLOW_CHECKPOINT_MAX_ATTEMPTS) {
+      logger.error('Gave up persisting workflow statistics', {
+        sessionId: entry.sessionId,
+        messageId: checkpoint.messageId,
+        taskId,
+        attempts
+      })
+      if (entry.workflowCheckpoints?.get(taskId) === checkpoint) entry.workflowCheckpoints.delete(taskId)
+      return
+    }
+    if (checkpoint.timer) return
+    checkpoint.timer = setTimeout(() => {
+      checkpoint.timer = undefined
+      if (!this.writeWorkflowCheckpoint(entry, taskId, checkpoint, true)) {
+        this.retryWorkflowCheckpoint(entry, taskId, checkpoint)
+        return
+      }
+      if (entry.workflowCheckpoints?.get(taskId) === checkpoint) entry.workflowCheckpoints.delete(taskId)
+    }, WORKFLOW_CHECKPOINT_THROTTLE_MS)
+    checkpoint.timer.unref?.()
   }
 
   private writeWorkflowCheckpointsForMessage(
@@ -2665,7 +2726,7 @@ export class AgentSessionRuntimeService extends BaseService {
     for (const [taskId, checkpoint] of entry.workflowCheckpoints ?? []) {
       if (checkpoint.messageId === messageId) {
         checkpointed = true
-        this.writeWorkflowCheckpoint(entry, taskId, checkpoint, allowDetached)
+        this.persistWorkflowCheckpoint(entry, taskId, checkpoint, allowDetached)
       }
     }
     return checkpointed
@@ -2902,8 +2963,8 @@ export class AgentSessionRuntimeService extends BaseService {
     }
     for (const [taskId, checkpoint] of entry.workflowCheckpoints ?? []) {
       if (retainedTaskIds.has(taskId)) continue
-      if (checkpoint.timer) this.writeWorkflowCheckpoint(entry, taskId, checkpoint, true)
-      entry.workflowCheckpoints?.delete(taskId)
+      this.flushPendingWorkflowCheckpoint(entry, taskId, checkpoint, true)
+      if ((checkpoint.failedAttempts ?? 0) === 0) entry.workflowCheckpoints?.delete(taskId)
     }
     entry.pendingTaskEventChunksByTaskId?.clear()
     entry.persistedFlowMessageIds?.clear()
@@ -3687,7 +3748,11 @@ export class AgentSessionRuntimeService extends BaseService {
     this.clearIdleTimer(entry)
     this.clearTaskEventsPublish(entry)
     for (const [taskId, checkpoint] of entry.workflowCheckpoints ?? []) {
-      if (checkpoint.timer) this.writeWorkflowCheckpoint(entry, taskId, checkpoint)
+      if (checkpoint.timer) {
+        this.writeWorkflowCheckpoint(entry, taskId, checkpoint)
+      } else if ((checkpoint.failedAttempts ?? 0) > 0) {
+        this.writeWorkflowCheckpoint(entry, taskId, checkpoint, true)
+      }
     }
     for (const accumulator of entry.backgroundFlowAccumulators?.values() ?? []) {
       const parts = accumulator.latest?.parts
@@ -3701,8 +3766,16 @@ export class AgentSessionRuntimeService extends BaseService {
         )
     }
     const backgroundClose = this.finishBackgroundFlows(entry).finally(() => {
-      for (const checkpoint of entry.workflowCheckpoints?.values() ?? []) {
+      const unpersisted: string[] = []
+      for (const [taskId, checkpoint] of entry.workflowCheckpoints ?? []) {
         if (checkpoint.timer) clearTimeout(checkpoint.timer)
+        if ((checkpoint.failedAttempts ?? 0) > 0) unpersisted.push(taskId)
+      }
+      if (unpersisted.length > 0) {
+        logger.error('Dropped unpersisted workflow statistics while closing the session', {
+          sessionId: entry.sessionId,
+          taskIds: unpersisted
+        })
       }
       entry.workflowCheckpoints?.clear()
     })
