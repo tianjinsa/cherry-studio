@@ -177,7 +177,7 @@
   "agent.right_pane.status.agent_count_one": "{{count}} agent",
   "agent.right_pane.status.agent_count_other": "{{count}} agents",
   "agent.right_pane.status.background_command": "Background command",
-  "agent.right_pane.status.completed": "Completed",
+  "agent.right_pane.status.completed": "Finished",
   "agent.right_pane.status.context_size": "Context size",
   "agent.right_pane.status.copy_agent_name": "Copy agent name: {{name}}",
   "agent.right_pane.status.copy_all": "Copy all",

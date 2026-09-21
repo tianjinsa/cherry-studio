@@ -177,7 +177,7 @@
   "agent.right_pane.status.agent_count_one": "{{count}} Agent",
   "agent.right_pane.status.agent_count_other": "{{count}} Agent",
   "agent.right_pane.status.background_command": "Lệnh nền",
-  "agent.right_pane.status.completed": "Đã hoàn thành",
+  "agent.right_pane.status.completed": "Đã kết thúc",
   "agent.right_pane.status.context_size": "Kích thước ngữ cảnh",
   "agent.right_pane.status.copy_agent_name": "Sao chép tên Agent: {{name}}",
   "agent.right_pane.status.copy_all": "Sao chép tất cả",

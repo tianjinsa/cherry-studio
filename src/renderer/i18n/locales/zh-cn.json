@@ -177,7 +177,7 @@
   "agent.right_pane.status.agent_count_one": "{{count}} 个智能体",
   "agent.right_pane.status.agent_count_other": "{{count}} 个智能体",
   "agent.right_pane.status.background_command": "后台命令",
-  "agent.right_pane.status.completed": "已完成",
+  "agent.right_pane.status.completed": "已结束",
   "agent.right_pane.status.context_size": "上下文规模",
   "agent.right_pane.status.copy_agent_name": "复制智能体名称：{{name}}",
   "agent.right_pane.status.copy_all": "复制全部",

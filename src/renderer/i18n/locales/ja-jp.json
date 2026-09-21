@@ -177,7 +177,7 @@
   "agent.right_pane.status.agent_count_one": "{{count}} エージェント",
   "agent.right_pane.status.agent_count_other": "{{count}} エージェント",
   "agent.right_pane.status.background_command": "バックグラウンドコマンド",
-  "agent.right_pane.status.completed": "完了",
+  "agent.right_pane.status.completed": "終了",
   "agent.right_pane.status.context_size": "コンテキストサイズ",
   "agent.right_pane.status.copy_agent_name": "エージェント名をコピー：{{name}}",
   "agent.right_pane.status.copy_all": "すべてコピー",

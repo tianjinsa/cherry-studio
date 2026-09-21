@@ -1982,6 +1982,7 @@ const AgentRunActivitySections = memo(function AgentRunActivitySections({
   const durationFormatter = useMemo(() => createDurationFormatter(language), [language])
   const workflowDurationFormatter = useMemo(() => createWholeSecondDurationFormatter(language), [language])
   const runningTasks = useMemo(() => getRunningRunTasks(tasks), [tasks])
+  // Terminal tasks — completed, stopped or error — share one finished group.
   const completedTasks = useMemo(() => getCompletedRunTasks(tasks), [tasks])
   if (runningTasks.length === 0 && completedTasks.length === 0) return null
 
