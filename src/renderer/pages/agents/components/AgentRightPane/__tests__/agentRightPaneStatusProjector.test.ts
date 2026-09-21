@@ -130,6 +130,19 @@ describe('cached agent right pane status', () => {
     expect(running.runTasks.map((task) => task.status)).toEqual(['in_progress', 'in_progress'])
   })
 
+  it('keeps a row published as interrupted after the message that displaced it goes away', () => {
+    const project = createAgentRightPaneStatusProjector()
+    const messages = [message('m1', [event('sync', { taskType: 'subagent', isBackgrounded: false })])]
+
+    const interrupted = project(messages, {}, {}, [], { activeMessageIds: new Set(['m2']) })
+    expect(interrupted.runTasks.map((task) => task.status)).toEqual(['error'])
+
+    // Nothing is live afterwards: the row must stay terminal instead of falling back to a running state.
+    const settled = project(messages, {}, {}, [], { activeMessageIds: new Set() })
+    expect(settled.runTasks.map((task) => task.status)).toEqual(['error'])
+    expect(settled.runTasks[0].completedAt).toBe(interrupted.runTasks[0].completedAt)
+  })
+
   it('freezes elapsed time when detached membership disappears until an authoritative completion arrives', () => {
     vi.useFakeTimers()
     try {

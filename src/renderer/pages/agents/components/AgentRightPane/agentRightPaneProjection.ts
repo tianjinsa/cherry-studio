@@ -933,6 +933,18 @@ function projectAgentRightPaneStatus(
       if (isLive) continue
       const anotherMessageIsLive = liveness.activeMessageIds.size > (originIsLive ? 1 : 0)
       if (!isDetached && !anotherMessageIsLive) {
+        const previous = previousRunTasks?.get(id)
+        // A row already published as terminal must not fall back to a running state once the turn
+        // that used to own it stops being live.
+        if (previous && isTerminalAgentSessionTaskStatus(previous.status)) {
+          runTaskMap.set(id, {
+            ...task,
+            status: previous.status,
+            completedAt: task.completedAt ?? previous.completedAt,
+            activeText: undefined
+          })
+          continue
+        }
         runTaskMap.set(id, { ...task, status: 'pending', activeText: undefined })
         continue
       }
