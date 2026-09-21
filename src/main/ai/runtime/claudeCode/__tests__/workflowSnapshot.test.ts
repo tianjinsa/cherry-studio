@@ -10,6 +10,7 @@ import {
   parseLocalWorkflowLaunch,
   parseLocalWorkflowPlan,
   resolveWorkflowSnapshotPath,
+  resolveWorkflowTranscriptDir,
   updateLocalWorkflowSnapshot
 } from '../workflowSnapshot'
 
@@ -154,18 +155,18 @@ describe('updateLocalWorkflowSnapshot', () => {
       }
     )
 
-    expect(
-      snapshot.workflowProgress
-        .filter((item) => item.type === 'workflow_agent')
-        .map(({ index, label, tokens }) => ({ index, label, tokens }))
-    ).toEqual([
+    const agentRows = snapshot.workflowProgress.filter((item) => item.type === 'workflow_agent')
+    expect(agentRows.map(({ index, label, tokens }) => ({ index, label, tokens }))).toEqual([
       { index: 1, label: 'new', tokens: 60 },
       { index: 2, label: 'second', tokens: 40 },
-      { index: 2, label: 'second', tokens: undefined },
+      { index: 3, label: 'second', tokens: undefined },
       { index: 4, label: 'later', tokens: undefined },
       { index: 9, label: 'shared', tokens: 30 },
       { index: 10, label: 'renamed', tokens: 50 }
     ])
+    // Downstream statistics and row keys treat `index` as an identity, so it must stay unique even
+    // when a label match moves a row onto an index another row still holds.
+    expect(new Set(agentRows.map((agent) => agent.index)).size).toBe(agentRows.length)
     expect(snapshot.totalTokens).toBe(180)
   })
 
@@ -377,6 +378,41 @@ describe('parseLocalWorkflowLaunch', () => {
       symlinkSync(foreignRoot, path.join(session.sessionRoot, 'workflows'))
 
       expect(parseLocalWorkflowLaunch(session.receipt(), 'c', session.sessionRoot)).toBeUndefined()
+    } finally {
+      session.cleanup()
+      rmSync(foreignRoot, { recursive: true, force: true })
+    }
+  })
+
+  it('re-checks the transcript directory before it is read', () => {
+    const session = createWorkflowSession()
+    try {
+      const launch = parseLocalWorkflowLaunch(session.receipt(), 'c', session.sessionRoot)
+      expect(resolveWorkflowTranscriptDir(launch!)).toBe(session.transcriptDir)
+
+      const scriptOnly = parseLocalWorkflowLaunch(
+        session.receipt({ transcriptDir: undefined, scriptPath: session.scriptPath }),
+        'c',
+        session.sessionRoot
+      )
+      expect(resolveWorkflowTranscriptDir(scriptOnly!)).toBeUndefined()
+    } finally {
+      session.cleanup()
+    }
+  })
+
+  it.skipIf(!symlinksSupported)('refuses a transcript directory swapped for an outside symlink', () => {
+    const session = createWorkflowSession()
+    const foreignRoot = realpathSync(mkdtempSync(path.join(tmpdir(), 'cherry-workflow-foreign-')))
+    try {
+      const launch = parseLocalWorkflowLaunch(session.receipt(), 'c', session.sessionRoot)
+      expect(launch).toBeDefined()
+
+      const transcriptDir = path.join(session.sessionRoot, 'subagents', 'workflows', RUN_ID)
+      rmSync(transcriptDir, { recursive: true, force: true })
+      symlinkSync(foreignRoot, transcriptDir)
+
+      expect(resolveWorkflowTranscriptDir(launch!)).toBeUndefined()
     } finally {
       session.cleanup()
       rmSync(foreignRoot, { recursive: true, force: true })

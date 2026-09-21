@@ -63,6 +63,7 @@ import {
   parseLocalWorkflowPlan,
   parseWorkflowSnapshotText,
   resolveWorkflowSnapshotPath,
+  resolveWorkflowTranscriptDir,
   updateLocalWorkflowSnapshot
 } from './workflowSnapshot'
 
@@ -2309,12 +2310,12 @@ export class ClaudeCodeStreamAdapter {
     const taskCache = this.workflowTranscriptStatsCaches.get(taskId)
     const cached = taskCache?.get(agentId)
     try {
-      let transcriptPath = cached?.transcriptPath
-      if (!transcriptPath) {
-        const transcriptDir = realpathSync(launch.transcriptDir)
-        transcriptPath = realpathSync(path.join(transcriptDir, `agent-${agentId}.jsonl`))
-        if (path.dirname(transcriptPath) !== transcriptDir) return undefined
-      }
+      const transcriptDir = resolveWorkflowTranscriptDir(launch)
+      if (!transcriptDir) return undefined
+      // Re-resolve on every read: the cache may reuse statistics, never a path that a symlinked
+      // directory could have redirected since it was first resolved.
+      const transcriptPath = realpathSync(path.join(transcriptDir, `agent-${agentId}.jsonl`))
+      if (path.dirname(transcriptPath) !== transcriptDir) return undefined
       const next = readAgentTranscriptStats(transcriptPath, cached)
       const nextTaskCache = taskCache ?? new Map<string, AgentTranscriptStatsCacheEntry>()
       nextTaskCache.set(agentId, next)

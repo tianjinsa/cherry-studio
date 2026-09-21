@@ -529,6 +529,20 @@ export function updateLocalWorkflowSnapshot(
     }
   }
 
+  // Statistics and rendered rows key workflow agents by `index`, so merging an agent onto an index
+  // another row still holds must renumber the collision instead of emitting duplicate identities.
+  const claimedAgentIndexes = new Set<number>()
+  for (const agent of agents) {
+    if (!claimedAgentIndexes.has(agent.index)) {
+      claimedAgentIndexes.add(agent.index)
+      continue
+    }
+    let nextIndex = agent.index + 1
+    while (claimedAgentIndexes.has(nextIndex)) nextIndex += 1
+    agent.index = nextIndex
+    claimedAgentIndexes.add(nextIndex)
+  }
+
   const active = runtimeWorkflowProgress
     ? undefined
     : getActiveWorkflowAgent(phases, update.description, update.lastToolName)
@@ -678,6 +692,17 @@ function isWorkflowScriptPath(value: string, runId: string): boolean {
     path.basename(path.dirname(value)) === 'scripts' &&
     path.basename(path.dirname(path.dirname(value))) === 'workflows'
   )
+}
+
+/**
+ * Re-resolves a launch transcript directory right before it is read: the directory the reader opens
+ * must still be the session-local `<runId>` transcript directory, which also rejects a symlinked
+ * stand-in installed after the receipt was parsed.
+ */
+export function resolveWorkflowTranscriptDir(launch: LocalWorkflowLaunch): string | undefined {
+  if (!launch.transcriptDir || !isSafeRunId(launch.runId)) return undefined
+  const resolved = resolveReceiptPath(launch.transcriptDir, launch.sessionRoot)
+  return resolved && isWorkflowTranscriptDir(resolved, launch.runId) ? resolved : undefined
 }
 
 /**
