@@ -8,6 +8,7 @@
   "agent.session.new": "Nueva tarea",
   "agent.session.run_status.busy": "La sesión del Agent está ocupada. Inténtalo de nuevo en breve.",
   "agent.session.run_status.unavailable": "La sesión del Agent ya no está disponible.",
+  "agent.session.storage_backlog": "Las nuevas tareas están en pausa porque hay demasiados resultados pendientes de guardar. Comprueba el espacio disponible y los permisos de almacenamiento e inténtalo de nuevo cuando se restablezca el guardado.",
   "agent.session.workspace_status.inaccessible": "La ruta del espacio de trabajo no es accesible: {{path}}",
   "agent.session.workspace_status.missing": "La ruta del espacio de trabajo no existe: {{path}}",
   "agent.session.workspace_status.not_directory": "La ruta del espacio de trabajo no es una carpeta: {{path}}",

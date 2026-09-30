@@ -1,4 +1,4 @@
-import { readdir, readFile, rm } from 'node:fs/promises'
+import { readdir, readFile, rm, stat } from 'node:fs/promises'
 
 import { type Span, SpanStatusCode } from '@opentelemetry/api'
 import { readUIMessageStream, type UIMessageChunk } from 'ai'
@@ -28,6 +28,7 @@ import {
   Phase,
   ServicePhase
 } from '@main/core/lifecycle'
+import { t } from '@main/i18n'
 import { topicNamingService } from '@main/services/TopicNamingService'
 import { atomicWriteFile } from '@main/utils/file'
 import { AGENT_SESSION_API_RETRY_CACHE_KEY, type AgentSessionApiRetryInfo } from '@shared/ai/agentSessionApiRetry'
@@ -138,6 +139,8 @@ const MESSAGE_PARTS_WRITE_MAX_ATTEMPTS = 3
 /** The streamed parts are the only copy of their output, so a stuck write falls back to this cadence. */
 const MESSAGE_PARTS_WRITE_SLOW_RETRY_MS = 30_000
 const ORPHANED_MESSAGE_PARTS_SWEEP_MS = 30_000
+const ORPHANED_MESSAGE_PARTS_MAX_FILES = 256
+const ORPHANED_MESSAGE_PARTS_MAX_BYTES = 64 * 1024 * 1024
 const MAX_PENDING_TASK_EVENT_HANDOFFS = 256
 
 function knowledgeScopeEquals(left: readonly string[], right: readonly string[]): boolean {
@@ -523,6 +526,9 @@ export class AgentSessionRuntimeService extends BaseService {
   private readonly _onRuntimeIdle = new Emitter<{ sessionId: string }>()
   readonly onRuntimeIdle: Event<{ sessionId: string }> = this._onRuntimeIdle.event
   private readonly entries = new Map<string, AgentSessionRuntimeEntry>()
+  private readonly orphanedFileSizes = new Map<string, number>()
+  private readonly pendingOrphanedFiles = new Set<string>()
+  private orphanedStorageUnavailable = false
   private readonly closingSessions = new Map<string, { promise: Promise<void>; resumeToken?: string }>()
   /** Write-quiesce holds (backup restore). Quiesced ⇔ non-empty. Distinct from the BaseService
    *  lifecycle pause — this never touches service state. See `pause()`. */
@@ -706,6 +712,7 @@ export class AgentSessionRuntimeService extends BaseService {
 
   beginTurn(input: BeginAgentSessionTurnInput): AgentSessionRuntimeHandle {
     this.assertSessionWritable(input.sessionId)
+    this.assertOrphanedStorageCapacity()
     const turnId = crypto.randomUUID()
     const userMessage = input.userMessage ?? createSyntheticUserMessage(input.sessionId)
     const messageSnapshot = input.messageSnapshot ? structuredClone(input.messageSnapshot) : undefined
@@ -1056,6 +1063,7 @@ export class AgentSessionRuntimeService extends BaseService {
   ): void {
     const entry = this.entries.get(sessionId)
     if (!entry) return
+    this.assertOrphanedStorageCapacity()
 
     this.clearIdleTimer(entry)
     // Message attributes ride the payloads themselves: a redirect carries them through the driver
@@ -3110,22 +3118,47 @@ export class AgentSessionRuntimeService extends BaseService {
    */
   private async holdOrphanedFile(key: string, value: unknown): Promise<void> {
     const name = `${key}.${uuidv7()}.json`
-    await atomicWriteFile(
-      AbsoluteFilePathSchema.parse(application.getPath('feature.agents.orphaned_message_parts', name)),
-      JSON.stringify(value)
-    )
+    const content = JSON.stringify(value)
+    // Reserve before yielding so concurrent finalizers apply backpressure to new turns immediately.
+    this.orphanedFileSizes.set(name, Buffer.byteLength(content))
+    this.pendingOrphanedFiles.add(name)
+    try {
+      await atomicWriteFile(
+        AbsoluteFilePathSchema.parse(application.getPath('feature.agents.orphaned_message_parts', name)),
+        content
+      )
+    } catch (error) {
+      this.orphanedFileSizes.delete(name)
+      this.orphanedStorageUnavailable = true
+      throw error
+    } finally {
+      this.pendingOrphanedFiles.delete(name)
+    }
     try {
       const superseded = (await readdir(application.getPath('feature.agents.orphaned_message_parts'))).filter(
         (other) => other.startsWith(`${key}.`) && other < name
       )
       await Promise.all(
-        superseded.map((other) =>
-          rm(application.getPath('feature.agents.orphaned_message_parts', other), { force: true })
-        )
+        superseded.map(async (other) => {
+          await rm(application.getPath('feature.agents.orphaned_message_parts', other), { force: true })
+          this.orphanedFileSizes.delete(other)
+        })
       )
     } catch (error) {
       // The new copy is already held; an older one left behind only lands before it on the next sweep.
       logger.warn('Failed to drop superseded held copies', { key, error })
+    }
+  }
+
+  private assertOrphanedStorageCapacity(): void {
+    const bytes = Array.from(this.orphanedFileSizes.values()).reduce((total, size) => total + size, 0)
+    // Existing output must survive; the limits stop new work rather than evicting its only copy.
+    if (
+      this.orphanedStorageUnavailable ||
+      this.orphanedFileSizes.size >= ORPHANED_MESSAGE_PARTS_MAX_FILES ||
+      bytes >= ORPHANED_MESSAGE_PARTS_MAX_BYTES
+    ) {
+      throw new Error(t('agent.session.storage_backlog'))
     }
   }
 
@@ -3161,8 +3194,25 @@ export class AgentSessionRuntimeService extends BaseService {
   private async flushOrphanedMessagePartsWrites(): Promise<void> {
     let names: string[]
     try {
+      const heldNames = [...this.orphanedFileSizes.keys()].filter((name) => !this.pendingOrphanedFiles.has(name))
       names = await readdir(application.getPath('feature.agents.orphaned_message_parts'))
+      const existingNames = new Set(names)
+      for (const name of heldNames) {
+        if (!existingNames.has(name)) this.orphanedFileSizes.delete(name)
+      }
+      for (const name of names) {
+        if (!name.endsWith('.json')) continue
+        const file = application.getPath('feature.agents.orphaned_message_parts', name)
+        try {
+          this.orphanedFileSizes.set(name, (await stat(file)).size)
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
+          this.orphanedFileSizes.delete(name)
+        }
+      }
+      this.orphanedStorageUnavailable = false
     } catch (error) {
+      this.orphanedStorageUnavailable = true
       logger.warn('Failed to list held detached flow message parts', { error })
       return
     }
@@ -3181,6 +3231,7 @@ export class AgentSessionRuntimeService extends BaseService {
           )
           this.syncHeldFlowPartsOverlay(held.sessionId, held.messageId, merged)
           await rm(file, { force: true })
+          this.orphanedFileSizes.delete(name)
           continue
         }
         if (!name.startsWith(ORPHANED_PARTS_WRITE_PREFIX)) continue
@@ -3200,6 +3251,7 @@ export class AgentSessionRuntimeService extends BaseService {
           cache.setShared(cacheKey, saved.data.parts ?? write.parts, BACKGROUND_FLOW_HANDOFF_TTL_MS)
         }
         await rm(file, { force: true })
+        this.orphanedFileSizes.delete(name)
       } catch (error) {
         logger.warn('Failed to land held detached flow message parts', { file, error })
       }
@@ -3520,6 +3572,7 @@ export class AgentSessionRuntimeService extends BaseService {
   private async admitTurn(entry: AgentSessionRuntimeEntry, turn: AgentSessionTurn): Promise<void> {
     if (!this.isCurrentEntry(entry) || this.currentTurn(entry) !== turn || !this.isTurnLive(entry, turn)) return
     if (isAgentSessionRuntimeTurnAdmitted(entry.runtimeState, turn)) return
+    this.assertOrphanedStorageCapacity()
     this.applyRuntimeStateEvent(entry, { type: 'turn-admitted', turn })
     // A fresh request starts clean — drop any retry status left over from the previous turn.
     this.clearApiRetry(entry)

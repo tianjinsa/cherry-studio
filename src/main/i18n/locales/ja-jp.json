@@ -8,6 +8,7 @@
   "agent.session.new": "新しいタスク",
   "agent.session.run_status.busy": "Agent セッションは処理中です。しばらくしてからもう一度お試しください。",
   "agent.session.run_status.unavailable": "Agent セッションは利用できなくなりました。",
+  "agent.session.storage_backlog": "保存待ちの出力が多すぎるため、新しいタスクを一時停止しています。ディスクの空き容量とアクセス権限を確認し、保存が復旧してから再試行してください。",
   "agent.session.workspace_status.inaccessible": "ワークスペースパスにアクセスできません: {{path}}",
   "agent.session.workspace_status.missing": "ワークスペースパスが存在しません: {{path}}",
   "agent.session.workspace_status.not_directory": "ワークスペースパスがフォルダーではありません: {{path}}",

@@ -8,6 +8,7 @@
   "agent.session.new": "Новая задача",
   "agent.session.run_status.busy": "Сеанс Agent занят. Повторите попытку чуть позже.",
   "agent.session.run_status.unavailable": "Сеанс Agent больше недоступен.",
+  "agent.session.storage_backlog": "Новые задачи приостановлены: слишком много результатов ожидают сохранения. Проверьте свободное место на диске и права доступа, затем повторите попытку после восстановления сохранения.",
   "agent.session.workspace_status.inaccessible": "Путь к рабочей области недоступен: {{path}}",
   "agent.session.workspace_status.missing": "Путь к рабочей области не существует: {{path}}",
   "agent.session.workspace_status.not_directory": "Путь к рабочей области не является каталогом: {{path}}",

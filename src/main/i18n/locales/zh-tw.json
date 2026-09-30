@@ -8,6 +8,7 @@
   "agent.session.new": "新任務",
   "agent.session.run_status.busy": "Agent 工作階段忙碌中，請稍後再試。",
   "agent.session.run_status.unavailable": "Agent 工作階段已無法使用。",
+  "agent.session.storage_backlog": "待儲存的輸出積壓過多，已暫停接收新任務。請檢查磁碟剩餘空間和儲存權限，待儲存恢復後重試。",
   "agent.session.workspace_status.inaccessible": "工作區路徑無法存取：{{path}}",
   "agent.session.workspace_status.missing": "工作區路徑不存在：{{path}}",
   "agent.session.workspace_status.not_directory": "工作區路徑不是資料夾：{{path}}",

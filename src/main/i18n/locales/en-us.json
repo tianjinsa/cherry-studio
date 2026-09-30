@@ -8,6 +8,7 @@
   "agent.session.new": "New task",
   "agent.session.run_status.busy": "The Agent Session is busy. Please try again shortly.",
   "agent.session.run_status.unavailable": "The Agent Session is no longer available.",
+  "agent.session.storage_backlog": "New tasks are paused because too much output is waiting to be saved. Check available disk space and storage permissions, then retry after saving recovers.",
   "agent.session.workspace_status.inaccessible": "Workspace path is not accessible: {{path}}",
   "agent.session.workspace_status.missing": "Workspace path does not exist: {{path}}",
   "agent.session.workspace_status.not_directory": "Workspace path is not a directory: {{path}}",

@@ -8,6 +8,7 @@
   "agent.session.new": "新任务",
   "agent.session.run_status.busy": "Agent 会话正忙，请稍后重试。",
   "agent.session.run_status.unavailable": "Agent 会话已不可用。",
+  "agent.session.storage_backlog": "待保存的输出积压过多，已暂停接收新任务。请检查磁盘剩余空间和存储权限，待保存恢复后重试。",
   "agent.session.workspace_status.inaccessible": "工作区路径不可访问：{{path}}",
   "agent.session.workspace_status.missing": "工作区路径不存在：{{path}}",
   "agent.session.workspace_status.not_directory": "工作区路径不是目录：{{path}}",

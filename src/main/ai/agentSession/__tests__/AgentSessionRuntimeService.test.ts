@@ -3966,6 +3966,53 @@ describe('AgentSessionRuntimeService', () => {
         )
       })
 
+      it('blocks new work across sessions at the file limit and resumes after replay without dropping output', async () => {
+        const service = new AgentSessionRuntimeService()
+        service.beginTurn(baseTurnInput)
+        const entry = getEntry(service)
+        const turn = entry.runtimeState.execution.turn
+        const held = { sessionId: 'session-1', messageId: 'assistant-1', parts: partsOf('saved'), events: [] }
+        await Promise.all(
+          Array.from({ length: 256 }, (_, index) =>
+            writeFile(path.join(outbox, `parts.${index}.json`), JSON.stringify({ ...held, messageId: `held-${index}` }))
+          )
+        )
+        mocks.replaceMessagePartsWithWorkflowCheckpoints.mockImplementation(() => {
+          throw new Error('database is locked')
+        })
+
+        await (service as any).flushOrphanedMessagePartsWrites()
+
+        expect(() => service.beginTurn({ ...baseTurnInput, sessionId: 'session-2' })).toThrow()
+        expect(() => service.enqueueUserMessage('session-1', userMessage('blocked'))).toThrow()
+        await expect((service as any).admitTurn(entry, turn)).rejects.toThrow()
+        expect(await readdir(outbox)).toHaveLength(256)
+
+        mocks.replaceMessagePartsWithWorkflowCheckpoints.mockReturnValue({ data: { parts: held.parts } })
+        await (service as any).flushOrphanedMessagePartsWrites()
+
+        expect(await readdir(outbox)).toEqual([])
+        expect(() => service.beginTurn({ ...baseTurnInput, sessionId: 'session-2' })).not.toThrow()
+      })
+
+      it('applies the byte limit before a held write finishes without truncating that output', async () => {
+        const service = new AgentSessionRuntimeService()
+        const text = 'x'.repeat(64 * 1024 * 1024)
+        const holding = (service as any).holdOrphanedMessagePartsWrite({
+          sessionId: 'session-1',
+          messageId: 'assistant-1',
+          parts: [{ type: 'text', text }],
+          events: []
+        })
+
+        expect(() => service.beginTurn(baseTurnInput)).toThrow()
+        await holding
+        const [name] = await readdir(outbox)
+        const saved = JSON.parse(await readFile(path.join(outbox, name), 'utf8'))
+        expect(saved.parts[0].text.length).toBe(text.length)
+        expect(saved.parts[0].text === text).toBe(true)
+      })
+
       it('lands only the newest held copy of a message', async () => {
         const service = await closeWithUnwritableFlows()
         await (service as any).holdOrphanedMessagePartsWrite({

@@ -8,6 +8,7 @@
   "agent.session.new": "Nouvelle tâche",
   "agent.session.run_status.busy": "La session Agent est occupée. Veuillez réessayer dans quelques instants.",
   "agent.session.run_status.unavailable": "La session Agent n’est plus disponible.",
+  "agent.session.storage_backlog": "Les nouvelles tâches sont suspendues car trop de résultats attendent d’être enregistrés. Vérifiez l’espace disque disponible et les autorisations de stockage, puis réessayez lorsque l’enregistrement fonctionne à nouveau.",
   "agent.session.workspace_status.inaccessible": "Le chemin de l'espace de travail n'est pas accessible : {{path}}",
   "agent.session.workspace_status.missing": "Le chemin de l'espace de travail n'existe pas : {{path}}",
   "agent.session.workspace_status.not_directory": "Le chemin de l’espace de travail n’est pas un répertoire : {{path}}",

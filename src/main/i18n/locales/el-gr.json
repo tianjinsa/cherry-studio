@@ -8,6 +8,7 @@
   "agent.session.new": "Νέα εργασία",
   "agent.session.run_status.busy": "Η συνεδρία Agent είναι απασχολημένη. Δοκιμάστε ξανά σε λίγο.",
   "agent.session.run_status.unavailable": "Η συνεδρία Agent δεν είναι πλέον διαθέσιμη.",
+  "agent.session.storage_backlog": "Οι νέες εργασίες έχουν τεθεί σε παύση επειδή υπερβολικά πολλά αποτελέσματα αναμένουν αποθήκευση. Ελέγξτε τον διαθέσιμο χώρο και τα δικαιώματα αποθήκευσης και δοκιμάστε ξανά όταν αποκατασταθεί η αποθήκευση.",
   "agent.session.workspace_status.inaccessible": "Η διαδρομή του χώρου εργασίας δεν είναι προσβάσιμη: {{path}}",
   "agent.session.workspace_status.missing": "Η διαδρομή του χώρου εργασίας δεν υπάρχει: {{path}}",
   "agent.session.workspace_status.not_directory": "Η διαδρομή του χώρου εργασίας δεν είναι κατάλογος: {{path}}",
