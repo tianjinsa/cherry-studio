@@ -19,6 +19,7 @@ const mocks = vi.hoisted(() => ({
   runtimeEnqueueUserMessage: vi.fn(),
   runtimeIsSessionBusy: vi.fn(),
   runtimeAssertWritable: vi.fn(),
+  runtimeAssertCapacity: vi.fn(),
   runtimeValidateSession: vi.fn()
 }))
 
@@ -141,7 +142,8 @@ describe('AgentChatContextProvider', () => {
           beginTurn: mocks.runtimeBeginTurn,
           enqueueUserMessage: mocks.runtimeEnqueueUserMessage,
           isSessionBusy: mocks.runtimeIsSessionBusy,
-          assertSessionWritable: mocks.runtimeAssertWritable
+          assertSessionWritable: mocks.runtimeAssertWritable,
+          assertOrphanedStorageCapacity: mocks.runtimeAssertCapacity
         }
       }
       if (name === 'DbService') return { withWriteTx: (fn: (tx: object) => unknown) => fn({}) }

@@ -176,6 +176,7 @@ export class AgentChatContextProvider implements ChatContextProvider {
     validated: ValidatedAgentDispatch,
     expectedAgent?: string | { id: string; updatedAt: string; model: string; type: string }
   ): PersistedAgentDispatch {
+    application.get('AgentSessionRuntimeService').assertOrphanedStorageCapacity()
     const assistantMessageId = uuidv7()
     const savedMessages = agentSessionMessageService.saveMessagesTx(
       tx,
@@ -260,6 +261,20 @@ export class AgentChatContextProvider implements ChatContextProvider {
       })
     } catch (error) {
       turnTrace.end('error', error instanceof Error ? error : new Error(String(error)))
+      agentSessionMessageService.saveMessage(
+        {
+          sessionId: validated.sessionId,
+          message: {
+            id: assistantMessageId,
+            role: 'assistant',
+            data: savedMessages[1].data,
+            modelId: savedMessages[1].modelId,
+            messageSnapshot: savedMessages[1].messageSnapshot,
+            status: 'error'
+          }
+        },
+        { publishDataChange: true }
+      )
       throw error
     }
 
@@ -309,6 +324,7 @@ export class AgentChatContextProvider implements ChatContextProvider {
     const validated = await this.validateDispatch(req, authority)
     const runtime = application.get('AgentSessionRuntimeService')
     runtime.assertSessionWritable(validated.sessionId)
+    runtime.assertOrphanedStorageCapacity()
     if (req.trigger === 'edit-agent-message') {
       if (ctx?.hasLiveStream) throw new AgentSessionEditError('busy')
       runtime.assertSessionEditable(validated.sessionId)

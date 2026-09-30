@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import { EventEmitter } from 'node:events'
 import type * as FsPromises from 'node:fs/promises'
-import { lstat, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises'
+import { lstat, mkdir, mkdtemp, open, readFile, readdir, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 
@@ -70,7 +70,7 @@ const forkRecoveryMocks = vi.hoisted(() => ({
 
 vi.mock('node:fs/promises', async (importOriginal) => {
   const actual = await importOriginal<typeof FsPromises>()
-  return { ...actual, rm: vi.fn(actual.rm) }
+  return { ...actual, rm: vi.fn(actual.rm), open: vi.fn(actual.open) }
 })
 
 vi.mock('@data/services/AgentSessionForkService', async (importOriginal) => ({
@@ -3964,6 +3964,42 @@ describe('AgentSessionRuntimeService', () => {
           partsOf('newer'),
           []
         )
+      })
+
+      it('keeps admission blocked on readable storage until an actual write succeeds', async () => {
+        const service = new AgentSessionRuntimeService()
+        const full = Object.assign(new Error('disk full'), { code: 'ENOSPC' })
+        vi.mocked(open).mockRejectedValueOnce(full)
+        await (service as any).holdOrphanedMessagePartsWrite({
+          sessionId: 'session-1',
+          messageId: 'assistant-1',
+          parts: partsOf('held'),
+          events: []
+        })
+        expect(() => service.beginTurn(baseTurnInput)).toThrow()
+        vi.mocked(open).mockRejectedValueOnce(full)
+        await (service as any).flushOrphanedMessagePartsWrites()
+        expect(() => service.beginTurn(baseTurnInput)).toThrow()
+        await (service as any).flushOrphanedMessagePartsWrites()
+        expect(() => service.beginTurn(baseTurnInput)).not.toThrow()
+        expect(await readdir(outbox)).toEqual([])
+      })
+
+      it('does not clear a write failure that occurs during a successful recovery probe', async () => {
+        const service = new AgentSessionRuntimeService()
+        const full = Object.assign(new Error('disk full'), { code: 'ENOSPC' })
+        const held = { sessionId: 'session-1', messageId: 'assistant-1', parts: partsOf('held'), events: [] }
+        vi.mocked(open).mockRejectedValueOnce(full)
+        await (service as any).holdOrphanedMessagePartsWrite(held)
+        vi.mocked(rm).mockImplementationOnce(async (target, options) => {
+          vi.mocked(open).mockRejectedValueOnce(full)
+          await (service as any).holdOrphanedMessagePartsWrite(held)
+          return realFs.rm(target, options)
+        })
+        await (service as any).flushOrphanedMessagePartsWrites()
+        expect(() => service.beginTurn(baseTurnInput)).toThrow()
+        await (service as any).flushOrphanedMessagePartsWrites()
+        expect(() => service.beginTurn(baseTurnInput)).not.toThrow()
       })
 
       it('blocks new work across sessions at the file limit and resumes after replay without dropping output', async () => {

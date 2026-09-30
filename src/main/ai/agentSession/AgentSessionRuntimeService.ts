@@ -529,6 +529,7 @@ export class AgentSessionRuntimeService extends BaseService {
   private readonly orphanedFileSizes = new Map<string, number>()
   private readonly pendingOrphanedFiles = new Set<string>()
   private orphanedStorageUnavailable = false
+  private orphanedStorageFailureVersion = 0
   private readonly closingSessions = new Map<string, { promise: Promise<void>; resumeToken?: string }>()
   /** Write-quiesce holds (backup restore). Quiesced ⇔ non-empty. Distinct from the BaseService
    *  lifecycle pause — this never touches service state. See `pause()`. */
@@ -3130,6 +3131,7 @@ export class AgentSessionRuntimeService extends BaseService {
     } catch (error) {
       this.orphanedFileSizes.delete(name)
       this.orphanedStorageUnavailable = true
+      this.orphanedStorageFailureVersion += 1
       throw error
     } finally {
       this.pendingOrphanedFiles.delete(name)
@@ -3150,7 +3152,7 @@ export class AgentSessionRuntimeService extends BaseService {
     }
   }
 
-  private assertOrphanedStorageCapacity(): void {
+  assertOrphanedStorageCapacity(): void {
     const bytes = Array.from(this.orphanedFileSizes.values()).reduce((total, size) => total + size, 0)
     // Existing output must survive; the limits stop new work rather than evicting its only copy.
     if (
@@ -3193,6 +3195,7 @@ export class AgentSessionRuntimeService extends BaseService {
    * no other copy. A row that is gone is released, since nothing can be written back into it. */
   private async flushOrphanedMessagePartsWrites(): Promise<void> {
     let names: string[]
+    const failureVersion = this.orphanedStorageFailureVersion
     try {
       const heldNames = [...this.orphanedFileSizes.keys()].filter((name) => !this.pendingOrphanedFiles.has(name))
       names = await readdir(application.getPath('feature.agents.orphaned_message_parts'))
@@ -3210,10 +3213,19 @@ export class AgentSessionRuntimeService extends BaseService {
           this.orphanedFileSizes.delete(name)
         }
       }
-      this.orphanedStorageUnavailable = false
+      if (this.orphanedStorageUnavailable) {
+        const probe = AbsoluteFilePathSchema.parse(
+          application.getPath('feature.agents.orphaned_message_parts', '.storage-probe')
+        )
+        await atomicWriteFile(probe, 'storage recovery probe')
+        await rm(probe, { force: true })
+        // A successful probe must not erase a newer failure from a concurrent output write.
+        if (failureVersion === this.orphanedStorageFailureVersion) this.orphanedStorageUnavailable = false
+      }
     } catch (error) {
       this.orphanedStorageUnavailable = true
-      logger.warn('Failed to list held detached flow message parts', { error })
+      this.orphanedStorageFailureVersion += 1
+      logger.warn('Failed to inspect held detached flow storage', { error })
       return
     }
     // Time-ordered names land the older copies of a key first, so the newest one has the last word.
