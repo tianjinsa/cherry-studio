@@ -1,4 +1,5 @@
 import { setupTestDatabase } from '@test-helpers/db'
+import { eq } from 'drizzle-orm'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { agentTable } from '@data/db/schemas/agent'
@@ -109,5 +110,29 @@ describe('Agent dispatch storage backpressure', () => {
       })
     await expect(provider.prepareDispatch(subscriber, request)).rejects.toThrow('storage backlog')
     expect(dbh.db.select().from(agentSessionMessageTable).all()).toEqual([])
+  })
+
+  it.each(['deleted', 'completed'])('does not overwrite a %s reply during failed activation', async (state) => {
+    runtime.beginTurn.mockImplementation(() => {
+      if (state === 'deleted') {
+        dbh.db.delete(agentSessionMessageTable).where(eq(agentSessionMessageTable.role, 'assistant')).run()
+      } else {
+        dbh.db
+          .update(agentSessionMessageTable)
+          .set({ status: 'success', data: { parts: [{ type: 'text', text: 'Completed reply' }] } })
+          .where(eq(agentSessionMessageTable.role, 'assistant'))
+          .run()
+      }
+      throw new Error('storage backlog')
+    })
+    await expect(provider.prepareDispatch(subscriber, request)).rejects.toThrow('storage backlog')
+    const reply = dbh.db
+      .select()
+      .from(agentSessionMessageTable)
+      .where(eq(agentSessionMessageTable.role, 'assistant'))
+      .get()
+    if (state === 'deleted') expect(reply).toBeUndefined()
+    else
+      expect(reply).toMatchObject({ status: 'success', data: { parts: [{ type: 'text', text: 'Completed reply' }] } })
   })
 })

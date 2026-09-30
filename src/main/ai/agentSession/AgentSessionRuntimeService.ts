@@ -3213,15 +3213,6 @@ export class AgentSessionRuntimeService extends BaseService {
           this.orphanedFileSizes.delete(name)
         }
       }
-      if (this.orphanedStorageUnavailable) {
-        const probe = AbsoluteFilePathSchema.parse(
-          application.getPath('feature.agents.orphaned_message_parts', '.storage-probe')
-        )
-        await atomicWriteFile(probe, 'storage recovery probe')
-        await rm(probe, { force: true })
-        // A successful probe must not erase a newer failure from a concurrent output write.
-        if (failureVersion === this.orphanedStorageFailureVersion) this.orphanedStorageUnavailable = false
-      }
     } catch (error) {
       this.orphanedStorageUnavailable = true
       this.orphanedStorageFailureVersion += 1
@@ -3266,6 +3257,21 @@ export class AgentSessionRuntimeService extends BaseService {
         this.orphanedFileSizes.delete(name)
       } catch (error) {
         logger.warn('Failed to land held detached flow message parts', { file, error })
+      }
+    }
+    if (this.orphanedStorageUnavailable) {
+      try {
+        const probe = AbsoluteFilePathSchema.parse(
+          application.getPath('feature.agents.orphaned_message_parts', '.storage-probe')
+        )
+        await atomicWriteFile(probe, 'storage recovery probe')
+        await rm(probe, { force: true })
+        // A successful probe must not erase a newer failure from a concurrent output write.
+        if (failureVersion === this.orphanedStorageFailureVersion) this.orphanedStorageUnavailable = false
+      } catch (error) {
+        this.orphanedStorageUnavailable = true
+        this.orphanedStorageFailureVersion += 1
+        logger.warn('Held detached flow storage is still unavailable', { error })
       }
     }
   }

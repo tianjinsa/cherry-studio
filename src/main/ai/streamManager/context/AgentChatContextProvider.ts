@@ -261,20 +261,7 @@ export class AgentChatContextProvider implements ChatContextProvider {
       })
     } catch (error) {
       turnTrace.end('error', error instanceof Error ? error : new Error(String(error)))
-      agentSessionMessageService.saveMessage(
-        {
-          sessionId: validated.sessionId,
-          message: {
-            id: assistantMessageId,
-            role: 'assistant',
-            data: savedMessages[1].data,
-            modelId: savedMessages[1].modelId,
-            messageSnapshot: savedMessages[1].messageSnapshot,
-            status: 'error'
-          }
-        },
-        { publishDataChange: true }
-      )
+      agentSessionMessageService.markAssistantMessageTerminalError(validated.sessionId, assistantMessageId)
       throw error
     }
 

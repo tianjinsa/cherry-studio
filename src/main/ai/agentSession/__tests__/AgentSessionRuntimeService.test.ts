@@ -4002,6 +4002,30 @@ describe('AgentSessionRuntimeService', () => {
         expect(() => service.beginTurn(baseTurnInput)).not.toThrow()
       })
 
+      it('replays held output even while the storage recovery probe still fails', async () => {
+        const service = new AgentSessionRuntimeService()
+        const held = { sessionId: 'session-1', messageId: 'assistant-1', parts: partsOf('saved'), events: [] }
+        await (service as any).holdOrphanedMessagePartsWrite(held)
+        const full = Object.assign(new Error('disk full'), { code: 'ENOSPC' })
+        vi.mocked(open).mockRejectedValueOnce(full)
+        await (service as any).holdOrphanedMessagePartsWrite({ ...held, messageId: 'assistant-2' })
+        mocks.replaceMessagePartsWithWorkflowCheckpoints.mockReturnValue({ data: { parts: held.parts } })
+        vi.mocked(open).mockRejectedValueOnce(full)
+
+        await (service as any).flushOrphanedMessagePartsWrites()
+
+        expect(mocks.replaceMessagePartsWithWorkflowCheckpoints).toHaveBeenCalledWith(
+          held.sessionId,
+          held.messageId,
+          held.parts,
+          held.events
+        )
+        expect(await readdir(outbox)).toEqual([])
+        expect(() => service.beginTurn(baseTurnInput)).toThrow()
+        await (service as any).flushOrphanedMessagePartsWrites()
+        expect(() => service.beginTurn(baseTurnInput)).not.toThrow()
+      })
+
       it('blocks new work across sessions at the file limit and resumes after replay without dropping output', async () => {
         const service = new AgentSessionRuntimeService()
         service.beginTurn(baseTurnInput)
