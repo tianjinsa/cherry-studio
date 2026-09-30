@@ -981,6 +981,7 @@ describe('ClaudeCodeStreamAdapter', () => {
   })
 
   it('reads running foreground Agent usage from its standard subagent transcript', () => {
+    vi.useFakeTimers()
     const fixture = createAgentTranscriptFixture()
     try {
       const { adapter, statusEvents } = createAdapter({ claudeConfigDir: fixture.claudeConfigDir })
@@ -988,6 +989,8 @@ describe('ClaudeCodeStreamAdapter', () => {
 
       fixture.appendAssistantStep('message-1', 100, 20, [{ id: 'tool-1' }])
       emitAgentProgress(adapter, fixture, { description: 'Reading the implementation', durationMs: 1000 })
+      expect(statusEvents.at(-1)?.data.usage?.totalTokens).toBeUndefined()
+      vi.advanceTimersByTime(200)
       expect(statusEvents.at(-1)?.data.usage).toEqual({
         totalTokens: 120,
         contextTokens: 120,
@@ -1002,6 +1005,8 @@ describe('ClaudeCodeStreamAdapter', () => {
         { id: 'tool-5' }
       ])
       emitAgentProgress(adapter, fixture, { description: 'Checking the projection', durationMs: 2000 })
+      expect(statusEvents.at(-1)?.data.usage?.totalTokens).toBe(120)
+      vi.advanceTimersByTime(200)
       expect(statusEvents.at(-1)?.data.usage).toEqual({
         totalTokens: 350,
         contextTokens: 230,
@@ -1018,6 +1023,7 @@ describe('ClaudeCodeStreamAdapter', () => {
       })
     } finally {
       fixture.cleanup()
+      vi.useRealTimers()
     }
   })
 
@@ -1033,6 +1039,7 @@ describe('ClaudeCodeStreamAdapter', () => {
 
       fixture.appendAssistantStep('message-1', 100, 20, [{ id: 'tool-1' }])
       emitAgentProgress(adapter, fixture, { description: 'Reading the implementation', durationMs: 1000 })
+      vi.advanceTimersByTime(200)
       completeForegroundAgent(adapter, fixture, { contextTokens: 240, toolUses: 2, durationMs: 3000 })
       expect(getLastBackgroundTaskEvent(statusEvents)?.data.usage).toEqual({
         totalTokens: 120,
@@ -1102,6 +1109,84 @@ describe('ClaudeCodeStreamAdapter', () => {
     }
   })
 
+  it.each(['missing', 'empty', 'cached-read-error'] as const)(
+    'retries a %s transcript after the result instead of releasing its terminal reconciliation',
+    (state) => {
+      vi.useFakeTimers()
+      const fixture = createAgentTranscriptFixture(`agent-result-${state}`)
+      try {
+        const { adapter, statusEvents } = createAdapter({ claudeConfigDir: fixture.claudeConfigDir })
+        startAgentTask(adapter, fixture)
+        if (state === 'cached-read-error') {
+          fixture.appendAssistantStep('message-1', 100, 20)
+          emitAgentProgress(adapter, fixture, { description: 'Reading the implementation', durationMs: 1000 })
+          vi.advanceTimersByTime(200)
+          expect(getLastBackgroundTaskEvent(statusEvents)?.data.usage?.totalTokens).toBe(120)
+        }
+        completeForegroundAgent(adapter, fixture, { contextTokens: 240, toolUses: 2, durationMs: 3000 })
+        if (state !== 'empty') rmSync(fixture.transcriptPath)
+        adapter.handleMessage(successResult({ session_id: fixture.sessionId }))
+        vi.advanceTimersByTime(0)
+
+        fixture.appendAssistantStep('message-1', 100, 20)
+        fixture.appendAssistantStep('message-2', 200, 30)
+        vi.advanceTimersByTime(1000)
+        expect(getLastBackgroundTaskEvent(statusEvents)?.data).toMatchObject({
+          status: 'completed',
+          usage: { totalTokens: 350, contextTokens: 240 }
+        })
+      } finally {
+        fixture.cleanup()
+        vi.useRealTimers()
+      }
+    }
+  )
+
+  it('keeps idle terminal reconciliation open for consecutive delayed transcript writes', () => {
+    vi.useFakeTimers()
+    const fixture = createAgentTranscriptFixture('agent-idle-delayed-writes')
+    try {
+      const { adapter, statusEvents } = createAdapter({ claudeConfigDir: fixture.claudeConfigDir })
+      startAgentTask(adapter, fixture, { backgrounded: true })
+      adapter.handleMessage(successResult({ session_id: fixture.sessionId }))
+      completeBackgroundAgent(adapter, fixture, { contextTokens: 240, toolUses: 2, durationMs: 3000 })
+      fixture.appendAssistantStep('message-1', 100, 20)
+      vi.advanceTimersByTime(1000)
+      expect(getLastBackgroundTaskEvent(statusEvents)?.data.usage?.totalTokens).toBe(120)
+      fixture.appendAssistantStep('message-2', 200, 30)
+      vi.advanceTimersByTime(1000)
+      expect(getLastBackgroundTaskEvent(statusEvents)?.data).toMatchObject({
+        status: 'completed',
+        usage: { totalTokens: 350, contextTokens: 240 }
+      })
+    } finally {
+      fixture.cleanup()
+      vi.useRealTimers()
+    }
+  })
+
+  it('retries a partial transcript after a result until the final line is readable', () => {
+    vi.useFakeTimers()
+    const fixture = createAgentTranscriptFixture('agent-result-partial-write')
+    try {
+      const { adapter, statusEvents } = createAdapter({ claudeConfigDir: fixture.claudeConfigDir })
+      startAgentTask(adapter, fixture)
+      fixture.appendAssistantStep('message-1', 100, 20)
+      const finishWrite = fixture.appendAssistantStepPartially('message-2', 200, 30)
+      completeForegroundAgent(adapter, fixture, { contextTokens: 240, toolUses: 2, durationMs: 3000 })
+      expect(getLastBackgroundTaskEvent(statusEvents)?.data.usage?.totalTokens).toBeUndefined()
+      adapter.handleMessage(successResult({ session_id: fixture.sessionId }))
+      vi.advanceTimersByTime(0)
+      expect(getLastBackgroundTaskEvent(statusEvents)?.data.usage?.totalTokens).toBeUndefined()
+      finishWrite()
+      vi.advanceTimersByTime(1000)
+      expect(getLastBackgroundTaskEvent(statusEvents)?.data.usage?.totalTokens).toBe(350)
+    } finally {
+      fixture.cleanup()
+      vi.useRealTimers()
+    }
+  })
+
   it('refreshes foreground Agent usage from its transcript when progress races the JSONL write', () => {
     vi.useFakeTimers()
     const fixture = createAgentTranscriptFixture('agent-racing-progress')
@@ -1121,7 +1206,8 @@ describe('ClaudeCodeStreamAdapter', () => {
       expect(getLastBackgroundTaskEvent(statusEvents)?.data.usage).toEqual({
         totalTokens: 120,
         contextTokens: 120,
-        toolUses: 1
+        toolUses: 1,
+        durationMs: 1000
       })
       expect(
         parts.filter((part) => part.type === 'data-agent-task-event' && part.data.event === 'progress').at(-1)
@@ -1138,6 +1224,7 @@ describe('ClaudeCodeStreamAdapter', () => {
   })
 
   it('reads running and completed background Agent usage from its standard subagent transcript', () => {
+    vi.useFakeTimers()
     const fixture = createAgentTranscriptFixture('agent-background')
     try {
       const { adapter, statusEvents } = createAdapter({ claudeConfigDir: fixture.claudeConfigDir })
@@ -1150,6 +1237,7 @@ describe('ClaudeCodeStreamAdapter', () => {
         { id: 'tool-background-4' }
       ])
       emitAgentProgress(adapter, fixture, { description: 'Checking the projection', durationMs: 2000 })
+      vi.advanceTimersByTime(200)
       expect(statusEvents.at(-1)?.data.usage).toEqual({
         totalTokens: 350,
         contextTokens: 230,
@@ -1167,6 +1255,7 @@ describe('ClaudeCodeStreamAdapter', () => {
       })
     } finally {
       fixture.cleanup()
+      vi.useRealTimers()
     }
   })
 
@@ -1182,6 +1271,7 @@ describe('ClaudeCodeStreamAdapter', () => {
 
       fixture.appendAssistantStep('message-1', 100, 20, [{ id: 'tool-1' }])
       emitAgentProgress(adapter, fixture, { description: 'Reading the implementation', durationMs: 1000 })
+      vi.advanceTimersByTime(200)
       adapter.handleMessage(successResult({ session_id: fixture.sessionId }))
       completeBackgroundAgent(adapter, fixture, { contextTokens: 240, toolUses: 2, durationMs: 3000 })
       expect(getLastBackgroundTaskEvent(statusEvents)?.data.usage).toEqual({

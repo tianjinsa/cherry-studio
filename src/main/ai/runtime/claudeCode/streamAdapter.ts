@@ -266,7 +266,8 @@ type PendingTerminalAgentState = PendingTerminalWorkflowState & {
 }
 
 type AgentTranscriptRefresh = {
-  rootToolCallId: string
+  rootToolCallId: string | undefined
+  usage?: AgentTaskEventPartData['usage']
   sdkSessionId: string
   /** Latest forwarded step the refresh covers; only a task without a timeline yet reads it. */
   timestamp: string
@@ -2056,19 +2057,22 @@ export class ClaudeCodeStreamAdapter {
    *  runs from a timer instead of on the SDK event path. */
   private scheduleAgentTranscriptRefresh(
     taskId: string,
-    rootToolCallId: string,
+    rootToolCallId: string | undefined,
     sdkSessionId: string,
-    timestamp: string
+    timestamp: string,
+    usage?: AgentTaskEventPartData['usage']
   ): void {
     const pending = this.agentTranscriptRefreshes.get(taskId)
     if (pending) {
       pending.sdkSessionId = sdkSessionId
       pending.timestamp = timestamp
+      pending.rootToolCallId = rootToolCallId ?? pending.rootToolCallId
+      pending.usage = usage ?? pending.usage
       return
     }
     const timer = setTimeout(() => this.refreshAgentTranscriptProgress(taskId), AGENT_TRANSCRIPT_REFRESH_DELAY_MS)
     timer.unref?.()
-    this.agentTranscriptRefreshes.set(taskId, { rootToolCallId, sdkSessionId, timestamp, timer })
+    this.agentTranscriptRefreshes.set(taskId, { rootToolCallId, sdkSessionId, timestamp, timer, usage })
   }
 
   private refreshAgentTranscriptProgress(taskId: string): void {
@@ -2095,13 +2099,22 @@ export class ClaudeCodeStreamAdapter {
     ) {
       return
     }
-    this.publishAgentProgress(taskId, pending.rootToolCallId, pending.timestamp)
+    this.publishAgentProgress(taskId, pending.rootToolCallId, pending.timestamp, pending.usage)
   }
 
-  private publishAgentProgress(taskId: string, rootToolCallId: string, timestamp: string): void {
+  private publishAgentProgress(
+    taskId: string,
+    rootToolCallId: string | undefined,
+    timestamp: string,
+    reportedUsage?: AgentTaskEventPartData['usage']
+  ): void {
     const transcriptStats = this.agentTranscriptStatsCaches.get(taskId)
-    const stats = hasAgentUsageStats(transcriptStats) ? transcriptStats : this.agentFlowStats.get(rootToolCallId)
-    const usage = this.getAgentUsage(stats, undefined, false)
+    const stats = hasAgentUsageStats(transcriptStats)
+      ? transcriptStats
+      : rootToolCallId
+        ? this.agentFlowStats.get(rootToolCallId)
+        : undefined
+    const usage = this.getAgentUsage(stats, reportedUsage, false)
     if (!usage) return
     const eventData: AgentTaskEventPartData = {
       event: 'progress',
@@ -2113,7 +2126,7 @@ export class ClaudeCodeStreamAdapter {
       usage
     }
     this.statusSink.emit({ type: 'background-task-event', data: eventData })
-    if (this.turnActive && this.ctx.toolStates.has(rootToolCallId)) {
+    if (this.turnActive && rootToolCallId && this.ctx.toolStates.has(rootToolCallId)) {
       this.ctx.sink.enqueue({
         type: 'data-agent-task-event',
         id: `task-${taskId}-progress`,
@@ -2133,9 +2146,7 @@ export class ClaudeCodeStreamAdapter {
       ...(completed.toolUses !== undefined ? { toolUses: completed.toolUses } : {}),
       ...(completed.durationMs !== undefined ? { durationMs: completed.durationMs } : {})
     }
-    const transcriptStats = sdkSessionId
-      ? this.readAgentTaskTranscriptStats(completed.agentId, sdkSessionId)
-      : undefined
+    const transcriptStats = this.agentTranscriptStatsCaches.get(completed.agentId)
     const usage = this.getAgentUsage(
       hasAgentUsageStats(transcriptStats) ? transcriptStats : this.agentFlowStats.get(toolCallId),
       reportedUsage,
@@ -2524,14 +2535,14 @@ export class ClaudeCodeStreamAdapter {
   ): AgentTranscriptStatsCacheEntry | undefined {
     const cached = this.agentTranscriptStatsCaches.get(taskId)
     const transcriptPath = this.resolveAgentTranscriptPath(taskId, sdkSessionId)
-    if (!transcriptPath) return cached
+    if (!transcriptPath) return undefined
 
     try {
       const next = drainAgentTranscriptStats(transcriptPath, cached)
       this.agentTranscriptStatsCaches.set(taskId, next)
       return next
     } catch {
-      return cached
+      return undefined
     }
   }
 
@@ -2699,8 +2710,8 @@ export class ClaudeCodeStreamAdapter {
     const pending = this.pendingTerminalAgentEvents.get(taskId)
     if (!pending) return
     const transcriptStats = this.drainAgentTaskTranscriptStats(taskId, pending.sdkSessionId)
-    // Only a tail the ceiling left unread, or a half-line still changing, means the CLI is still
-    // flushing; a file frozen mid-line across two attempts, or read after a result, has no writer left.
+    // A partial line may still be landing even after result delivery, so keep retrying until
+    // the complete tail is readable or the bounded quiet window expires.
     const unreadTail = Boolean(transcriptStats && transcriptStats.readOffset < transcriptStats.sizeBytes)
     const stamp = pending.lastTranscriptStamp
     const unchangedStamp = Boolean(
@@ -2717,7 +2728,7 @@ export class ClaudeCodeStreamAdapter {
       transcriptStats &&
       !unreadTail &&
       transcriptStats.pendingLine.length > 0 &&
-      (pending.flushed || pending.quietTranscriptAttempts >= TERMINAL_TRANSCRIPT_QUIET_ATTEMPTS)
+      pending.quietTranscriptAttempts >= TERMINAL_TRANSCRIPT_QUIET_ATTEMPTS
     )
     // A terminal task is never reconciled again, so an unread transcript must not be published as if
     // it were final: only complete lines, or lines whose writer is provably gone, may count.
@@ -2729,9 +2740,9 @@ export class ClaudeCodeStreamAdapter {
       pending.eventData = { ...pending.eventData, usage }
       this.statusSink.emit({ type: 'background-task-event', data: pending.eventData })
     }
-    // Only a result proves the transcript complete, and an active turn always ends in one; an idle
-    // session may never see another, so there the first changed total has to be final.
-    if (pending.flushed ? !unreadTail : usageChanged && !this.turnActive) {
+    // A result cannot substitute for a successful read. Idle tasks keep the full retry window
+    // because a changed total can still be only the first of several delayed writes.
+    if (pending.flushed && transcriptReadable) {
       this.finishTerminalTaskReconciliation(taskId)
       return
     }
@@ -2877,9 +2888,7 @@ export class ClaudeCodeStreamAdapter {
             ...(baseEventData.usage.toolUses !== undefined ? { totalToolCalls: baseEventData.usage.toolUses } : {})
           }
         : workflowSnapshot
-    const transcriptStats = isAgentTask
-      ? this.readAgentTaskTranscriptStats(baseEventData.taskId, message.session_id)
-      : undefined
+    const transcriptStats = isAgentTask ? this.agentTranscriptStatsCaches.get(baseEventData.taskId) : undefined
     const agentStats = hasAgentUsageStats(transcriptStats)
       ? transcriptStats
       : toolUseId
@@ -2920,6 +2929,14 @@ export class ClaudeCodeStreamAdapter {
       this.scheduleTerminalWorkflowReconciliation(eventData)
     } else if (shouldReconcileTerminalAgent) {
       this.scheduleTerminalAgentReconciliation(eventData, message.session_id)
+    } else if (isAgentTask && !isTerminal) {
+      this.scheduleAgentTranscriptRefresh(
+        eventData.taskId,
+        toolUseId,
+        message.session_id,
+        getSdkMessageTimestamp(message),
+        eventData.usage
+      )
     }
     if (isTerminal) {
       this.terminalTaskIds.add(eventData.taskId)
