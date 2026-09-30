@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import { EventEmitter } from 'node:events'
 import type * as FsPromises from 'node:fs/promises'
-import { lstat, mkdir, mkdtemp, open, readFile, readdir, rm, writeFile } from 'node:fs/promises'
+import { lstat, mkdir, mkdtemp, open, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 
@@ -70,7 +70,14 @@ const forkRecoveryMocks = vi.hoisted(() => ({
 
 vi.mock('node:fs/promises', async (importOriginal) => {
   const actual = await importOriginal<typeof FsPromises>()
-  return { ...actual, rm: vi.fn(actual.rm), open: vi.fn(actual.open) }
+  return {
+    ...actual,
+    rm: vi.fn(actual.rm),
+    open: vi.fn(actual.open),
+    readFile: vi.fn(actual.readFile),
+    readdir: vi.fn(actual.readdir),
+    stat: vi.fn(actual.stat)
+  }
 })
 
 vi.mock('@data/services/AgentSessionForkService', async (importOriginal) => ({
@@ -3964,6 +3971,45 @@ describe('AgentSessionRuntimeService', () => {
           partsOf('newer'),
           []
         )
+      })
+
+      it('does not replay held output concurrently while an earlier sweep is reading it', async () => {
+        const service = new AgentSessionRuntimeService()
+        const held = { sessionId: 'session-1', messageId: 'assistant-1', parts: partsOf('saved'), events: [] }
+        await (service as any).holdOrphanedMessagePartsWrite(held)
+        const names = await realFs.readdir(outbox)
+        const fileStats = await realFs.stat(path.join(outbox, names[0]))
+        const entered = createDeferred<void>()
+        const release = createDeferred<void>()
+        vi.mocked(readdir).mockImplementation(async () => names as never)
+        vi.mocked(stat).mockImplementation(async () => fileStats)
+        vi.mocked(readFile)
+          .mockImplementationOnce(async () => {
+            entered.resolve()
+            await release.promise
+            return JSON.stringify(held)
+          })
+          .mockResolvedValue(JSON.stringify(held))
+        let first: Promise<void> | undefined
+        let second: Promise<void> | undefined
+        try {
+          first = (service as any).flushOrphanedMessagePartsWrites()
+          await entered.promise
+          second = (service as any).flushOrphanedMessagePartsWrites()
+          // All filesystem mocks resolve immediately except the first read held above.
+          for (let step = 0; step < 12; step++) await Promise.resolve()
+          expect(mocks.replaceMessagePartsWithWorkflowCheckpoints).not.toHaveBeenCalled()
+          release.resolve()
+          await Promise.all([first, second])
+          expect(mocks.replaceMessagePartsWithWorkflowCheckpoints).toHaveBeenCalledTimes(1)
+          expect(await realFs.readdir(outbox)).toEqual([])
+        } finally {
+          release.resolve()
+          await Promise.all([first, second])
+          vi.mocked(readdir).mockReset().mockImplementation(realFs.readdir)
+          vi.mocked(stat).mockReset().mockImplementation(realFs.stat)
+          vi.mocked(readFile).mockReset().mockImplementation(realFs.readFile)
+        }
       })
 
       it('keeps admission blocked on readable storage until an actual write succeeds', async () => {

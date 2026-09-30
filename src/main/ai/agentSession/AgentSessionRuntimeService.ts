@@ -530,6 +530,7 @@ export class AgentSessionRuntimeService extends BaseService {
   private readonly pendingOrphanedFiles = new Set<string>()
   private orphanedStorageUnavailable = false
   private orphanedStorageFailureVersion = 0
+  private orphanedFlush: Promise<void> | undefined
   private readonly closingSessions = new Map<string, { promise: Promise<void>; resumeToken?: string }>()
   /** Write-quiesce holds (backup restore). Quiesced ⇔ non-empty. Distinct from the BaseService
    *  lifecycle pause — this never touches service state. See `pause()`. */
@@ -3193,7 +3194,14 @@ export class AgentSessionRuntimeService extends BaseService {
 
   /** Retries the writes closing entries could not land: the service-level fallback for output that has
    * no other copy. A row that is gone is released, since nothing can be written back into it. */
-  private async flushOrphanedMessagePartsWrites(): Promise<void> {
+  private flushOrphanedMessagePartsWrites(): Promise<void> {
+    this.orphanedFlush ??= this.replayOrphanedMessagePartsWrites().finally(() => {
+      this.orphanedFlush = undefined
+    })
+    return this.orphanedFlush
+  }
+
+  private async replayOrphanedMessagePartsWrites(): Promise<void> {
     let names: string[]
     const failureVersion = this.orphanedStorageFailureVersion
     try {
